@@ -1,4 +1,6 @@
 const axios = require('axios');
+const FormData = require('form-data');
+const fs = require('fs');
 const config = require('../config');
 const db = require('./database');
 
@@ -26,6 +28,30 @@ async function tgSend(chatId, text, replyMarkup = null) {
         return null;
     }
     return null;
+}
+
+/**
+ * Fungsi untuk mengirim foto/screenshot
+ */
+async function tgSendPhoto(chatId, filePath, caption = "") {
+    try {
+        const form = new FormData();
+        form.append('chat_id', chatId);
+        form.append('photo', fs.createReadStream(filePath));
+        form.append('caption', caption);
+        form.append('parse_mode', 'HTML');
+
+        const res = await axios.post(`${config.API_URL}/sendPhoto`, form, {
+            headers: {
+                ...form.getHeaders(),
+            },
+        });
+        return res.data.ok;
+    } catch (e) {
+        if (await handleRateLimit(e)) return tgSendPhoto(chatId, filePath, caption);
+        console.error("[!] Gagal mengirim foto:", e.message);
+        return false;
+    }
 }
 
 async function tgEdit(chatId, messageId, text, replyMarkup = null) {
@@ -91,9 +117,6 @@ async function isUserInBothGroups(userId) {
     return g1 && g2;
 }
 
-/**
- * Fungsi Broadcast dengan Jeda 1 Detik per User
- */
 async function tgBroadcast(messageText, adminId) {
     const userIds = Array.from(db.loadUsers());
     let success = 0;
@@ -104,7 +127,6 @@ async function tgBroadcast(messageText, adminId) {
     for (let i = 0; i < userIds.length; i++) {
         const uid = userIds[i];
         
-        // Update status ke admin setiap 5 user agar admin tetap mendapat info progres
         if (i % 5 === 0 && adminMsgId) {
             await tgEdit(adminId, adminMsgId, `🔄 Siaran Sedang Berjalan...\n\n📊 Progress: <b>${i}/${userIds.length}</b>\n✅ Sukses: <b>${success}</b>\n❌ Gagal: <b>${fail}</b>`);
         }
@@ -117,7 +139,6 @@ async function tgBroadcast(messageText, adminId) {
             fail++;
         }
 
-        // JEDA 1 DETIK (1000ms) per user
         await new Promise(r => setTimeout(r, 1000));
     }
     
@@ -131,6 +152,6 @@ async function tgBroadcast(messageText, adminId) {
 }
 
 module.exports = {
-    tgSend, tgEdit, tgDelete, tgSendAction, tgGetUpdates,
+    tgSend, tgSendPhoto, tgEdit, tgDelete, tgSendAction, tgGetUpdates,
     isUserInGroup, isUserInBothGroups, tgBroadcast
 };
