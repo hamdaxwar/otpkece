@@ -1,121 +1,66 @@
-require('dotenv').config(); 
-const { fork } = require('child_process');
-const cron = require('node-cron');
-const config = require('./config');
-const db = require('./helpers/database');
 const tg = require('./helpers/telegram');
-const scraper = require('./helpers/scraper');
-const { state, playwrightLock } = require('./helpers/state');
-const commands = require('./handlers/commands');
-const callbacks = require('./handlers/callbacks');
-
-// --- BARIS DEBUG YANG KAMU MINTA ---
-console.log("-----------------------------------------");
-console.log("DEBUG ENV EMAIL:", process.env.STEX_EMAIL);
-console.log("DEBUG ENV ADMIN:", process.env.ADMIN_ID);
-console.log("-----------------------------------------");
 
 /**
- * Background Task: Monitor Kadaluarsa
+ * Fungsi untuk menangani proses login dan navigasi paksa ke halaman GetNum
+ * VERSI PUPPETEER-CORE (TERMUX FRIENDLY)
  */
-async function expiryMonitorTask() {
-    setInterval(async () => {
-        try {
-            const waitList = db.loadWaitList();
-            const now = Date.now() / 1000;
-            const updatedList = [];
-            for (const item of waitList) {
-                if (item.otp_received_time) {
-                    updatedList.push(item);
-                    continue;
-                }
-
-                if (now - item.timestamp > 1200) { // 20 Menit
-                    const msgId = await tg.tgSend(item.user_id, `⚠️ Nomor <code>${item.number}</code> telah kadaluarsa.`);
-                    if (msgId) {
-                        setTimeout(() => tg.tgDelete(item.user_id, msgId), 30000);
-                    }
-                } else {
-                    updatedList.push(item);
-                }
-            }
-            db.saveWaitList(updatedList);
-        } catch (e) { /* silent error */ }
-    }, 15000);
-}
-
-/**
- * Telegram Polling Loop
- */
-async function telegramLoop() {
-    state.verifiedUsers = db.loadUsers();
-    let offset = 0;
-
+async function performLogin(page, email, password, loginUrl) {
     try {
-        await tg.tgGetUpdates(-1);
-    } catch (e) {}
-    
-    console.log("[TELEGRAM] Polling dimulai...");
+        const adminId = process.env.ADMIN_ID;
 
-    while (true) {
-        try {
-            const data = await tg.tgGetUpdates(offset);
-            if (data && data.result) {
-                for (const upd of data.result) {
-                    offset = upd.update_id + 1;
-                    if (upd.message) await commands.processCommand(upd.message);
-                    if (upd.callback_query) await callbacks.processCallback(upd.callback_query);
-                }
-            }
-        } catch (e) {
-            if (e.response && e.response.status === 429) {
-                const retryAfter = (e.response.data.parameters?.retry_after || 10) * 1000;
-                await new Promise(r => setTimeout(r, retryAfter));
-            } else {
-                await new Promise(r => setTimeout(r, 5000));
-            }
+        console.log("[BROWSER] Membuka halaman login...");
+        await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        
+        console.log("[BROWSER] Menunggu stabilitas browser...");
+        await new Promise(r => setTimeout(r, 2000));
+
+        await page.waitForSelector("input[type='email']", { timeout: 30000 });
+        
+        console.log("[BROWSER] Mengisi email dan password...");
+        
+        // Membersihkan field sebelum mengisi
+        await page.click("input[type='email']", { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await page.type("input[type='email']", email, { delay: 50 }); 
+
+        await page.click("input[type='password']", { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await page.type("input[type='password']", password, { delay: 50 });
+        
+        console.log("[BROWSER] Menekan tombol Sign In...");
+        await page.click("button[type='submit']");
+
+        // Tunggu sebentar untuk proses login
+        await new Promise(r => setTimeout(r, 4000));
+
+        // --- DEBUG SCREENSHOT ---
+        const ssPath = './debug_login.png';
+        await page.screenshot({ path: ssPath });
+        if (adminId) {
+            await tg.tgSendPhoto(adminId, ssPath, `<b>DEBUG LOGIN</b>\nURL: <code>${page.url()}</code>`).catch(() => {});
         }
-        await new Promise(r => setTimeout(r, 1000));
+
+        // PAKSA REDIRECT LANGSUNG KE GETNUM
+        console.log("[BROWSER] Navigasi paksa ke GetNum...");
+        await page.goto("https://stexsms.com/mdashboard/getnum", { 
+            waitUntil: 'networkidle2', 
+            timeout: 60000 
+        });
+
+        // Verifikasi keberhasilan
+        try {
+            await page.waitForSelector("input[name='numberrange']", { timeout: 15000 });
+            console.log("[BROWSER] KONFIRMASI: Berhasil di halaman GetNum.");
+            return true;
+        } catch (e) {
+            console.log("[BROWSER] Gagal verifikasi halaman dashboard.");
+            return false;
+        }
+    } catch (err) {
+        console.error("[LOGIN ERROR]", err.message);
+        return false;
     }
 }
 
-/**
- * MAIN FUNCTION
- */
-async function main() {
-    console.log("[INFO] Menjalankan NodeJS Bot Modular...");
-    
-    db.initializeFiles();
-    
-    console.log("[INFO] Mengaktifkan semua modul monitor...");
-    require('./range.js'); 
-    require('./message.js'); 
-    require('./sms.js'); 
-
-    cron.schedule('0 7 * * *', async () => {
-        console.log("[CRON] Menyegarkan Sesi Browser...");
-        const release = await playwrightLock.acquire();
-        try {
-            await scraper.initBrowser();
-        } catch (e) {
-            console.error("[CRON ERROR]", e.message);
-        } finally {
-            release();
-        }
-    }, {
-        scheduled: true,
-        timezone: "Asia/Jakarta"
-    });
-
-    try {
-        await scraper.initBrowser();
-        await Promise.all([
-            telegramLoop(),
-            expiryMonitorTask()
-        ]);
-    } catch (e) {
-        console.error("[FATAL ERROR]", e.message);
-    }
-}
-
-main();
+// EKSPOR DALAM BENTUK OBJEK (Penting agar tidak error "not a function")
+module.exports = { performLogin };
