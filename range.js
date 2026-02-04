@@ -11,13 +11,13 @@ const CONFIG = {
     ALLOWED_SERVICES: ['whatsapp', 'facebook'],
     BANNED_COUNTRIES: ['angola'],
     ATTACH_DELAY: 5000,
-    SEND_DELAY: 1500 // JEDA ANTAR PESAN (1.5 Detik agar sangat aman)
+    SEND_DELAY: 1500 
 };
 
 let SENT_MESSAGES = new Map();
 let CACHE_SET = new Set();
-let MESSAGE_QUEUE = []; // Antrean pesan
-let IS_PROCESSING_QUEUE = false; // Status antrean
+let MESSAGE_QUEUE = []; 
+let IS_PROCESSING_QUEUE = false; 
 
 const COUNTRY_EMOJI = require('./country.json');
 const INLINE_JSON_PATH = path.join(__dirname, 'inline.json');
@@ -39,29 +39,22 @@ const cleanServiceName = (service) => {
     return service.trim();
 };
 
-/**
- * SISTEM ANTREAN PESAN (QUEUE)
- * Memastikan pengiriman ke Telegram memiliki jeda agar tidak kena Limit 429
- */
 async function processQueue() {
     if (IS_PROCESSING_QUEUE || MESSAGE_QUEUE.length === 0) return;
     IS_PROCESSING_QUEUE = true;
 
     while (MESSAGE_QUEUE.length > 0) {
-        const item = MESSAGE_QUEUE.shift(); // Ambil pesan paling depan
+        const item = MESSAGE_QUEUE.shift(); 
         try {
-            // 1. Hapus pesan lama jika ada (Update Range)
             if (SENT_MESSAGES.has(item.rangeVal)) {
                 const oldMid = SENT_MESSAGES.get(item.rangeVal).message_id;
                 await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteMessage`, {
                     chat_id: CONFIG.CHAT_ID, 
                     message_id: oldMid
                 }).catch(() => {});
-                // Beri jeda kecil setelah delete
                 await new Promise(r => setTimeout(r, 500));
             }
 
-            // 2. Kirim pesan baru
             const res = await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/sendMessage`, {
                 chat_id: CONFIG.CHAT_ID,
                 text: item.text,
@@ -83,14 +76,12 @@ async function processQueue() {
         } catch (e) {
             if (e.response && e.response.status === 429) {
                 const wait = (e.response.data.parameters?.retry_after || 10) * 1000;
-                console.log(`[!] Range Limit! Menunggu ${wait/1000}s...`);
-                MESSAGE_QUEUE.unshift(item); // Masukkan kembali ke depan antrean
+                MESSAGE_QUEUE.unshift(item); 
                 await new Promise(r => setTimeout(r, wait));
             } else {
                 console.error(`❌ [RANGE] Send Error: ${e.message}`);
             }
         }
-        // JEDA WAJIB antar pengiriman
         await new Promise(r => setTimeout(r, CONFIG.SEND_DELAY));
     }
     IS_PROCESSING_QUEUE = false;
@@ -147,33 +138,41 @@ async function startMonitor() {
         while (true) {
             try {
                 if (!monitorPage || monitorPage.isClosed()) {
-                    const contexts = state.browser.contexts();
-                    const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
-                    monitorPage = await context.newPage();
+                    // Di Puppeteer, kita langsung buat page baru dari browser state
+                    monitorPage = await state.browser.newPage();
+                    await monitorPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
                 }
 
                 if (!monitorPage.url().includes('/console')) {
-                    await monitorPage.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+                    await monitorPage.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'networkidle2' }).catch(() => {});
                 }
 
                 const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
                 await monitorPage.waitForSelector(CONSOLE_SELECTOR, { timeout: 5000 }).catch(() => {});
-                const elements = await monitorPage.locator(CONSOLE_SELECTOR).all();
 
-                for (const el of elements) {
+                // Ambil data menggunakan evaluate agar jauh lebih cepat di Termux
+                const entries = await monitorPage.evaluate((sel) => {
+                    const elements = document.querySelectorAll(sel);
+                    return Array.from(elements).map(el => {
+                        const rawC = el.querySelector(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono")?.innerText || "";
+                        const sRaw = el.querySelector(".flex-grow.min-w-0 .text-xs.font-bold.text-blue-400")?.innerText || "";
+                        const phoneRaw = el.querySelector(".flex-grow.min-w-0 .text-\\[10px\\].font-mono:last-of-type")?.innerText || "";
+                        const msgRaw = el.querySelector(".flex-grow.min-w-0 p")?.innerText || "";
+                        
+                        return { rawC, sRaw, phoneRaw, msgRaw };
+                    });
+                }, CONSOLE_SELECTOR);
+
+                for (const entry of entries) {
                     try {
-                        const rawC = await el.locator(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono").innerText();
-                        const country = rawC.includes("•") ? rawC.split("•")[1].trim() : "Unknown";
+                        const country = entry.rawC.includes("•") ? entry.rawC.split("•")[1].trim() : "Unknown";
                         if (CONFIG.BANNED_COUNTRIES.includes(country.toLowerCase())) continue;
 
-                        const sRaw = await el.locator(".flex-grow.min-w-0 .text-xs.font-bold.text-blue-400").innerText();
-                        const service = cleanServiceName(sRaw);
+                        const service = cleanServiceName(entry.sRaw);
                         if (!CONFIG.ALLOWED_SERVICES.some(s => service.toLowerCase().includes(s))) continue;
 
-                        const phoneRaw = await el.locator(".flex-grow.min-w-0 .text-\\[10px\\].font-mono").last().innerText();
-                        const phone = cleanPhoneNumber(phoneRaw);
-                        const msgRaw = await el.locator(".flex-grow.min-w-0 p").innerText();
-                        const fullMessage = msgRaw.replace('➜', '').trim();
+                        const phone = cleanPhoneNumber(entry.phoneRaw);
+                        const fullMessage = entry.msgRaw.replace('➜', '').trim();
 
                         const cacheKey = `${phone}_${fullMessage.length}`;
 
@@ -182,7 +181,6 @@ async function startMonitor() {
                             const currentData = SENT_MESSAGES.get(phone) || { count: 0 };
                             const newCount = currentData.count + 1;
                             
-                            // MASUKKAN KE ANTREAN, BUKAN LANGSUNG KIRIM
                             MESSAGE_QUEUE.push({
                                 rangeVal: phone,
                                 country,
@@ -190,7 +188,7 @@ async function startMonitor() {
                                 count: newCount,
                                 text: formatLiveMessage(phone, newCount, country, service, fullMessage)
                             });
-                            processQueue(); // Jalankan pemroses antrean
+                            processQueue(); 
                         }
                     } catch (e) { continue; }
                 }
