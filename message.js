@@ -23,7 +23,6 @@ let monitorPage = null;
 
 // ================= UTILS =================
 
-// Fungsi untuk mengamankan karakter HTML agar tidak dianggap blokir/error oleh Telegram
 function escapeHtml(text) {
     if (!text) return "";
     return text
@@ -60,7 +59,7 @@ function getUserData(phoneNumber) {
                 return { username: entry.username || "unknown", user_id: entry.user_id };
             }
         }
-    } catch (e) { /* ignore */ }
+    } catch (e) { }
     return { username: "unknown", user_id: null };
 }
 
@@ -111,17 +110,8 @@ async function sendTelegram(text, otpCode = null, targetChat = CHAT_ID) {
     }
 
     try {
-        const res = await axios.post(url, payload);
-        if (res.data.ok) {
-            console.log(`✅ [SUCCESS] Telegram terkirim ke ${targetChat}`);
-        }
-    } catch (e) {
-        if (e.response) {
-            console.error(`❌ [TG ERROR] Status: ${e.response.status} - Data: ${JSON.stringify(e.response.data)}`);
-        } else {
-            console.error(`❌ [TG ERROR] Koneksi gagal: ${e.message}`);
-        }
-    }
+        await axios.post(url, payload);
+    } catch (e) {}
 }
 
 // ================= COMMAND HANDLERS =================
@@ -143,7 +133,7 @@ async function checkTelegramCommands() {
                     await sendTelegram(msg, null, ADMIN_ID);
                 } else if (m.text === "/refresh") {
                     if (monitorPage) {
-                        await monitorPage.reload({ waitUntil: 'networkidle' }).catch(() => {});
+                        await monitorPage.reload({ waitUntil: 'networkidle2' }).catch(() => {});
                         const p = `ss_${Date.now()}.png`;
                         await monitorPage.screenshot({ path: p, fullPage: true }).catch(() => {});
                         
@@ -183,18 +173,24 @@ async function startSmsMonitor() {
         while (true) {
             try {
                 if (!monitorPage || monitorPage.isClosed()) {
-                    const contexts = state.browser.contexts();
-                    const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
-                    monitorPage = await context.newPage();
+                    monitorPage = await state.browser.newPage();
+                    await monitorPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
                     console.log("✅ [MESSAGE] Tab SMS aktif.");
                 }
 
                 if (!monitorPage.url().includes('/getnum')) {
-                    await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+                    await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'networkidle2' }).catch(() => {});
                 }
 
-                const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 5000 }).catch(() => null);
-                await monitorPage.click('th:has-text("Number Info")', { timeout: 1000 }).catch(() => {});
+                // Gunakan cara Puppeteer untuk menangkap response API
+                const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 8000 }).catch(() => null);
+                
+                // Klik tombol refresh info di dashboard
+                await monitorPage.evaluate(() => {
+                    const headers = Array.from(document.querySelectorAll('th'));
+                    const target = headers.find(h => h.innerText.includes('Number Info'));
+                    if (target) target.click();
+                }).catch(() => {});
                 
                 const response = await responsePromise;
                 if (response) {
@@ -231,7 +227,6 @@ async function startSmsMonitor() {
                                 const userTag = user.username !== "unknown" ? `@${user.username}` : "unknown";
                                 const emoji = getCountryEmoji(item.country || "");
                                 
-                                // Gunakan escapeHtml pada isi pesan agar karakter <#> tidak membuat pesan diblokir
                                 const safeFullMessage = escapeHtml(item.message);
                                 
                                 const msg = `💭 <b>New Message Received</b>\n\n` +
