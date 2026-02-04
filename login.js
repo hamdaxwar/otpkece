@@ -9,7 +9,10 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 60000 
         });
 
-        await new Promise(r => setTimeout(r, 3000));
+        // 🕒 TUNGGU BROWSER TERMUAT SEMPURNA
+        const delayMs = 4000; // ubah sesuai kebutuhan (ms)
+        console.log(`[BROWSER] Menunggu stabilitas browser (${delayMs/1000} detik)...`);
+        await new Promise(r => setTimeout(r, delayMs));
 
         const emailSelector = "input[type='email']";
         const passSelector  = "input[type='password']";
@@ -30,6 +33,7 @@ async function performLogin(page, email, password, loginUrl) {
             page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(()=>{})
         ]);
 
+        // 🕒 Delay setelah login
         await new Promise(r => setTimeout(r, 3000));
 
         const currentUrl = page.url();
@@ -39,7 +43,6 @@ async function performLogin(page, email, password, loginUrl) {
         if (currentUrl.includes('login')) {
             console.log("[BROWSER] Login gagal (masih di halaman login).");
 
-            // 📸 screenshot gagal login
             const img = "login_failed.png";
             await page.screenshot({ path: img });
 
@@ -56,7 +59,7 @@ async function performLogin(page, email, password, loginUrl) {
 
         console.log("[BROWSER] Login berhasil.");
 
-        // ✅ screenshot setelah login berhasil (opsional)
+        // ✅ Screenshot setelah login berhasil (opsional)
         const imgOk = "login_success.png";
         await page.screenshot({ path: imgOk });
 
@@ -73,7 +76,6 @@ async function performLogin(page, email, password, loginUrl) {
     } catch (err) {
         console.error("[LOGIN ERROR]", err.message);
 
-        // 📸 screenshot kalau error
         try {
             const imgErr = "login_error.png";
             await page.screenshot({ path: imgErr });
