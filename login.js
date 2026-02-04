@@ -9,23 +9,38 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 60000 
         });
 
-        // 🕒 TUNGGU BROWSER TERMUAT SEMPURNA
-        const delayMs = 4000; // ubah sesuai kebutuhan (ms)
+        // 🕒 Delay agar halaman benar-benar stabil
+        const delayMs = 4000;
         console.log(`[BROWSER] Menunggu stabilitas browser (${delayMs/1000} detik)...`);
-        await new Promise(r => setTimeout(r, delayMs));
+        await page.waitForTimeout(delayMs);
 
-        const emailSelector = "input[type='email']";
+        // 🔎 Selector fleksibel (lebih tahan perubahan UI)
+        const emailSelector = "input[type='email'], input[name='email'], input[type='text']";
         const passSelector  = "input[type='password']";
-        const btnSelector   = "button[type='submit']";
+        const btnSelector   = "button[type='submit'], input[type='submit']";
 
         console.log("[BROWSER] Menunggu input email...");
         await page.waitForSelector(emailSelector, { timeout: 20000 });
 
         console.log("[BROWSER] Mengisi email...");
-        await page.fill(emailSelector, email);
+        await page.click(emailSelector, { clickCount: 3 });
+        await page.type(emailSelector, email, { delay: 50 });
 
         console.log("[BROWSER] Mengisi password...");
-        await page.fill(passSelector, password);
+        await page.click(passSelector, { clickCount: 3 });
+        await page.type(passSelector, password, { delay: 50 });
+
+        // 📸 Screenshot sebelum klik login
+        const imgBefore = "login_before.png";
+        await page.screenshot({ path: imgBefore });
+
+        if (process.env.ADMIN_ID) {
+            await tg.tgSendPhoto(
+                process.env.ADMIN_ID,
+                imgBefore,
+                "🟡 Sebelum klik login"
+            ).catch(()=>{});
+        }
 
         console.log("[BROWSER] Klik Sign In...");
         await Promise.all([
@@ -34,22 +49,22 @@ async function performLogin(page, email, password, loginUrl) {
         ]);
 
         // 🕒 Delay setelah login
-        await new Promise(r => setTimeout(r, 3000));
+        await page.waitForTimeout(3000);
 
         const currentUrl = page.url();
         console.log("[DEBUG URL]", currentUrl);
 
-        // ❌ Jika masih di halaman login → gagal
+        // ❌ Jika masih di halaman login
         if (currentUrl.includes('login')) {
-            console.log("[BROWSER] Login gagal (masih di halaman login).");
+            console.log("[BROWSER] Login gagal.");
 
-            const img = "login_failed.png";
-            await page.screenshot({ path: img });
+            const imgFail = "login_failed.png";
+            await page.screenshot({ path: imgFail });
 
             if (process.env.ADMIN_ID) {
                 await tg.tgSendPhoto(
                     process.env.ADMIN_ID,
-                    img,
+                    imgFail,
                     "❌ Login gagal (masih di halaman login)"
                 ).catch(()=>{});
             }
@@ -59,7 +74,7 @@ async function performLogin(page, email, password, loginUrl) {
 
         console.log("[BROWSER] Login berhasil.");
 
-        // ✅ Screenshot setelah login berhasil (opsional)
+        // ✅ Screenshot setelah login sukses
         const imgOk = "login_success.png";
         await page.screenshot({ path: imgOk });
 
