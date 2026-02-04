@@ -1,84 +1,109 @@
+const fs = require('fs');
 const tg = require('./helpers/telegram');
 
-async function performLogin(page, email, password, loginUrl) {
+async function performLogin(page, loginUrl) {
     try {
-        console.log("[BROWSER] Membuka halaman login...");
-        
+        console.log("====================================");
+        console.log("[SPY] MODE PENGINTAI LOGIN AKTIF");
+        console.log("====================================");
+
+        console.log("[SPY] Membuka halaman login...");
         await page.goto(loginUrl, { 
-            waitUntil: 'load', // lebih stabil daripada networkidle2
+            waitUntil: 'load', 
             timeout: 60000 
         });
 
-        await new Promise(r => setTimeout(r, 4000));
+        // tunggu JS render
+        await new Promise(r => setTimeout(r, 5000));
 
-        console.log("[BROWSER] Debug: cari semua input di halaman...");
+        // ===============================
+        // 1️⃣ AMBIL HTML MENTAH HALAMAN
+        // ===============================
+        console.log("[SPY] Mengambil HTML halaman login...");
+        const html = await page.content();
+        fs.writeFileSync("login_raw.html", html);
+        console.log("[SPY] HTML disimpan: login_raw.html");
 
-        // 🔎 LOG semua input yang ada di halaman
+        // ===============================
+        // 2️⃣ AMBIL SEMUA INPUT
+        // ===============================
+        console.log("[SPY] Scan semua input...");
         const inputs = await page.$$eval("input", els =>
             els.map(e => ({
+                tag: e.tagName,
                 type: e.type,
                 name: e.name,
                 id: e.id,
-                class: e.className
+                class: e.className,
+                placeholder: e.placeholder,
+                value: e.value
             }))
         );
 
-        console.log("[DEBUG INPUT]", inputs);
+        fs.writeFileSync("login_inputs.json", JSON.stringify(inputs, null, 2));
+        console.log("[SPY] INPUT FOUND:", inputs);
 
-        // 🎯 selector email & password (fallback multi opsi)
-        const emailSelector = "input[type='email'], input[name*='mail'], input[id*='mail'], input[name*='user'], input[id*='user']";
-        const passSelector  = "input[type='password'], input[name*='pass'], input[id*='pass']";
+        // ===============================
+        // 3️⃣ AMBIL SEMUA FORM
+        // ===============================
+        console.log("[SPY] Scan semua form...");
+        const forms = await page.$$eval("form", forms =>
+            forms.map(f => ({
+                action: f.action,
+                method: f.method,
+                innerHTML: f.innerHTML.slice(0, 500) // potong biar nggak terlalu panjang
+            }))
+        );
 
-        console.log("[BROWSER] Mencari input email...");
-        await page.waitForSelector(emailSelector, { timeout: 20000 });
+        fs.writeFileSync("login_forms.json", JSON.stringify(forms, null, 2));
+        console.log("[SPY] FORMS FOUND:", forms);
 
-        console.log("[BROWSER] Mengisi email...");
-        await page.click(emailSelector, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.type(emailSelector, email, { delay: 50 });
+        // ===============================
+        // 4️⃣ CEK IFRAME
+        // ===============================
+        const frames = page.frames();
+        console.log("[SPY] JUMLAH IFRAME:", frames.length);
 
-        console.log("[BROWSER] Mengisi password...");
-        await page.click(passSelector, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.type(passSelector, password, { delay: 50 });
-
-        console.log("[BROWSER] Menekan tombol Sign In...");
-        await Promise.all([
-            page.click("button[type='submit'], button:has-text('Sign'), input[type='submit']"),
-            page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(()=>{})
-        ]);
-
-        await new Promise(r => setTimeout(r, 3000));
-
-        const currentUrl = page.url();
-        console.log("[DEBUG URL]", currentUrl);
-
-        if (currentUrl.includes('login')) {
-            console.log("[BROWSER] Login gagal (masih di halaman login).");
-
-            // 📸 screenshot kalau gagal
-            await page.screenshot({ path: 'login_failed.png' });
-            if (process.env.ADMIN_ID) {
-                await tg.tgSendPhoto(process.env.ADMIN_ID, 'login_failed.png', "❌ Login gagal / selector tidak cocok").catch(()=>{});
-            }
-
-            return false;
+        const iframeData = [];
+        for (const frame of frames) {
+            try {
+                const frameHtml = await frame.content();
+                iframeData.push({
+                    url: frame.url(),
+                    htmlSnippet: frameHtml.slice(0, 500)
+                });
+            } catch (e) {}
         }
 
-        console.log("[BROWSER] Login berhasil.");
+        fs.writeFileSync("login_iframes.json", JSON.stringify(iframeData, null, 2));
+
+        // ===============================
+        // 5️⃣ SCREENSHOT HALAMAN LOGIN
+        // ===============================
+        await page.screenshot({ path: "login_page.png" });
+        console.log("[SPY] Screenshot disimpan: login_page.png");
+
+        // ===============================
+        // 6️⃣ KIRIM KE TELEGRAM (OPSIONAL)
+        // ===============================
+        if (process.env.ADMIN_ID) {
+            try {
+                await tg.tgSendPhoto(process.env.ADMIN_ID, "login_page.png", "👁️ SPY LOGIN PAGE").catch(()=>{});
+                await tg.tgSendMessage(
+                    process.env.ADMIN_ID,
+                    "🧠 INPUT LOGIN FOUND:\n" + JSON.stringify(inputs, null, 2)
+                ).catch(()=>{});
+            } catch(e){}
+        }
+
+        console.log("====================================");
+        console.log("[SPY] SCAN LOGIN SELESAI ✅");
+        console.log("====================================");
+
         return true;
 
     } catch (err) {
-        console.error("[LOGIN ERROR]", err.message);
-
-        // 📸 screenshot kalau error
-        try {
-            await page.screenshot({ path: 'login_error.png' });
-            if (process.env.ADMIN_ID) {
-                await tg.tgSendPhoto(process.env.ADMIN_ID, 'login_error.png', "❌ Error login: " + err.message).catch(()=>{});
-            }
-        } catch(e){}
-
+        console.error("[SPY ERROR]", err.message);
         return false;
     }
 }
