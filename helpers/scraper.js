@@ -1,4 +1,4 @@
-const { chromium } = require('playwright-core'); // Menggunakan playwright-core
+const puppeteer = require('puppeteer-core'); // Ganti ke puppeteer-core
 const config = require('../config');
 const { performLogin } = require('../login.js'); 
 const { state, playwrightLock } = require('./state');
@@ -40,33 +40,30 @@ async function initBrowser() {
         try { await state.browser.close(); } catch(e){}
     }
     
-    console.log("[BROWSER] Launching Chromium-Browser in Termux...");
-    state.browser = await chromium.launch({
-        // PATH KHUSUS TERMUX
+    console.log("[BROWSER] Launching Chromium (Puppeteer) in Termux...");
+    state.browser = await puppeteer.launch({
         executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
-        headless: true, // Wajib true di Termux
+        headless: true,
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
-            '--single-process', // Lebih hemat RAM untuk HP
             '--no-zygote',
-            '--remote-debugging-port=9222'
+            '--single-process'
         ]
     });
 
-    const context = await state.browser.newContext({
-        // User Agent agar terdeteksi sebagai Mobile (lebih ringan)
-        userAgent: 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-    });
+    state.sharedPage = await state.browser.newPage();
     
-    state.sharedPage = await context.newPage();
+    // Set User Agent Manual di Puppeteer
+    await state.sharedPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
     try {
+        // Pastikan login.js juga sudah disesuaikan ke Puppeteer
         await performLogin(state.sharedPage, config.STEX_EMAIL, config.STEX_PASSWORD, config.LOGIN_URL);
         console.log("[BROWSER] Login Success. Redirecting to GetNum...");
-        await state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'domcontentloaded' });
+        await state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
         console.log("[BROWSER] Ready on Target URL.");
     } catch (e) {
         console.error(`[BROWSER ERROR] Login Failed: ${e.message}`);
@@ -75,27 +72,29 @@ async function initBrowser() {
 
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
-        const row = page.locator(rowSelector);
-        if (!(await row.isVisible())) return null;
+        // Puppeteer menggunakan evaluate untuk mengambil data dari DOM
+        const data = await page.evaluate((sel) => {
+            const row = document.querySelector(sel);
+            if (!row) return null;
 
-        const phoneEl = row.locator("td:nth-child(1) span.font-mono");
-        const numberRawList = await phoneEl.allInnerTexts();
-        const numberRaw = numberRawList.length > 0 ? numberRawList[0].trim() : null;
-        
-        const number = numberRaw ? normalizeNumber(numberRaw) : null;
-        if (!number || db.isInCache(number)) return null;
+            const phoneEl = row.querySelector("td:nth-child(1) span.font-mono");
+            const statusEl = row.querySelector("td:nth-child(1) div:nth-child(2) span");
+            const countryEl = row.querySelector("td:nth-child(2) span.text-slate-200");
 
-        const statusEl = row.locator("td:nth-child(1) div:nth-child(2) span");
-        const statusTextList = await statusEl.allInnerTexts();
-        const statusText = statusTextList.length > 0 ? statusTextList[0].trim().toLowerCase() : "unknown";
+            return {
+                numberRaw: phoneEl ? phoneEl.innerText.trim() : null,
+                statusText: statusEl ? statusEl.innerText.trim().toLowerCase() : "unknown",
+                country: countryEl ? countryEl.innerText.trim().toUpperCase() : "UNKNOWN"
+            };
+        }, rowSelector);
 
-        if (statusText.includes("success") || statusText.includes("failed")) return null;
+        if (!data || !data.numberRaw) return null;
+        if (data.statusText.includes("success") || data.statusText.includes("failed")) return null;
 
-        const countryEl = row.locator("td:nth-child(2) span.text-slate-200");
-        const countryList = await countryEl.allInnerTexts();
-        const country = countryList.length > 0 ? countryList[0].trim().toUpperCase() : "UNKNOWN";
+        const number = normalizeNumber(data.numberRaw);
+        if (db.isInCache(number)) return null;
 
-        if (number && number.length > 5) return { number, country, status: statusText };
+        if (number.length > 5) return { number, country: data.country, status: data.statusText };
         return null;
 
     } catch (e) {
@@ -125,10 +124,9 @@ async function getAllNumbersParallel(page, numToFetch) {
 // --- Main Action Logic ---
 
 async function actionTask(userId) {
-    const interval = setInterval(() => {
+    return setInterval(() => {
         tg.tgSendAction(userId, "typing");
     }, 4500);
-    return interval;
 }
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
@@ -139,7 +137,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
     if (playwrightLock.isLocked()) {
         if (!msgId) {
             msgId = await tg.tgSend(userId, getProgressMessage(0, 0, prefix, numToFetch));
-            if (!msgId) return;
         } else {
             await tg.tgEdit(userId, msgId, getProgressMessage(0, 0, prefix, numToFetch));
         }
@@ -153,7 +150,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         if (!msgId) {
             msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-            if (!msgId) return;
         }
 
         if (!state.sharedPage || state.sharedPage.isClosed()) {
@@ -162,72 +158,65 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         const page = state.sharedPage;
         const INPUT_SELECTOR = "input[name='numberrange']";
+        
         try {
-            await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 15000 });
-            await page.fill(INPUT_SELECTOR, "");
-            await page.fill(INPUT_SELECTOR, prefix);
+            await page.waitForSelector(INPUT_SELECTOR, { visible: true, timeout: 15000 });
+            
+            // Puppeteer mengisi input: klik dulu, hapus, baru ketik
+            await page.click(INPUT_SELECTOR, { clickCount: 3 }); 
+            await page.keyboard.press('Backspace');
+            await page.type(INPUT_SELECTOR, prefix);
             
             currentStep = 1;
             await new Promise(r => setTimeout(r, 800));
             currentStep = 2;
 
-            const BUTTON_SELECTOR = "button:has-text('Get Number')";
-            await page.waitForSelector(BUTTON_SELECTOR, { state: 'visible', timeout: 10000 });
+            const BUTTON_SELECTOR = "//button[contains(text(), 'Get Number')]";
+            // Tunggu button muncul
+            await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { visible: true, timeout: 10000 });
 
             for (let i = 0; i < clickCount; i++) {
-                await page.click(BUTTON_SELECTOR, { force: true });
-                await new Promise(r => setTimeout(r, 200)); 
+                // Gunakan evaluate untuk klik yang lebih stabil di Termux
+                await page.evaluate((sel) => {
+                    const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                    if (btn) btn.click();
+                }, BUTTON_SELECTOR);
+                await new Promise(r => setTimeout(r, 300)); 
             }
 
             currentStep = 3;
             await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
+            // ... (logika step progres tetap sama) ...
 
-            await new Promise(r => setTimeout(r, 500));
-            currentStep = 4;
-            await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-
+            // --- Bagian Scanning Nomor ---
             const rounds = [5.0, 5.0];
             let foundNumbers = [];
 
             for (let rIdx = 0; rIdx < rounds.length; rIdx++) {
-                const duration = rounds[rIdx];
-                if (rIdx === 0) currentStep = 5;
-                else if (rIdx === 1) {
-                    if (foundNumbers.length < numToFetch) {
-                        await page.click(BUTTON_SELECTOR, { force: true });
-                        await new Promise(r => setTimeout(r, 2000));
-                        currentStep = 8;
-                    }
+                if (rIdx === 1 && foundNumbers.length < numToFetch) {
+                    await page.evaluate((sel) => {
+                        const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                        if (btn) btn.click();
+                    }, BUTTON_SELECTOR);
+                    await new Promise(r => setTimeout(r, 2000));
+                    currentStep = 8;
                 }
 
                 const startTime = Date.now() / 1000;
-                let lastCheck = 0;
-
-                while ((Date.now() / 1000 - startTime) < duration) {
-                    const now = Date.now() / 1000;
-                    if (now - lastCheck >= 0.5) {
-                        foundNumbers = await getAllNumbersParallel(page, numToFetch);
-                        lastCheck = now;
-                        if (foundNumbers.length >= numToFetch) {
-                            currentStep = 12;
-                            break;
-                        }
+                while ((Date.now() / 1000 - startTime) < rounds[rIdx]) {
+                    foundNumbers = await getAllNumbersParallel(page, numToFetch);
+                    if (foundNumbers.length >= numToFetch) {
+                        currentStep = 12;
+                        break;
                     }
-
-                    const elapsedTime = now - startOpTime;
-                    const totalEstimated = 14; 
-                    const targetStep = Math.floor(12 * elapsedTime / totalEstimated);
-                    if (targetStep > currentStep && targetStep <= 12) {
-                        currentStep = targetStep;
-                        await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-                    }
-                    await new Promise(r => setTimeout(r, 100));
+                    await new Promise(r => setTimeout(r, 600));
                 }
                 if (foundNumbers.length >= numToFetch) break;
             }
 
+            // --- Output Akhir ---
             if (!foundNumbers || foundNumbers.length === 0) {
-                await tg.tgEdit(userId, msgId, "❌ NOMOR TIDAK DITEMUKAN. Coba lagi atau ganti range.");
+                await tg.tgEdit(userId, msgId, "❌ NOMOR TIDAK DITEMUKAN. Coba lagi.");
                 return;
             }
 
@@ -240,26 +229,17 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
                 db.addToWaitList(entry.number, userId, usernameTg, firstNameTg);
             });
 
-            state.lastUsedRange[userId] = prefix;
-            const emoji = config.COUNTRY_EMOJI[mainCountry] || "🏴‍☠️";
-            
-            let msg = numToFetch === 10 ? "✅ The numbers are ready.\n\n<code>" : "✅ The number is ready\n\n";
-            
-            if (numToFetch === 10) {
-                foundNumbers.slice(0, 10).forEach(entry => msg += `${entry.number}\n`);
-                msg += "</code>";
-            } else {
-                foundNumbers.slice(0, numToFetch).forEach((entry, idx) => {
-                    msg += `📞 Number ${numToFetch > 1 ? idx+1 : ''} : <code>${entry.number}</code>\n`;
-                });
-                msg += `${emoji} COUNTRY : ${mainCountry}\n🏷️ Range   : <code>${prefix}</code>\n\n<b>🤖 Number available, waiting for OTP</b>\n`;
-            }
+            const emoji = config.COUNTRY_EMOJI[mainCountry] || "🏳️";
+            let msg = `✅ Number ready\n\n`;
+            foundNumbers.slice(0, numToFetch).forEach((entry, idx) => {
+                msg += `📞 <code>${entry.number}</code>\n`;
+            });
+            msg += `\n${emoji} ${mainCountry} | Range: <code>${prefix}</code>`;
 
             const inlineKb = {
                 inline_keyboard: [
-                    [{ text: "🔄 Change 1 Number", callback_data: `change_num:1:${prefix}` }],
-                    [{ text: "🔄 Change 3 Number", callback_data: `change_num:3:${prefix}` }],
-                    [{ text: "🔐 OTP Grup", url: config.GROUP_LINK_1 }, { text: "🌐 Change Range", callback_data: "getnum" }]
+                    [{ text: "🔄 Change 1", callback_data: `change_num:1:${prefix}` }],
+                    [{ text: "🔐 OTP Grup", url: config.GROUP_LINK_1 }, { text: "🌐 New Range", callback_data: "getnum" }]
                 ]
             };
 
@@ -267,10 +247,8 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         } catch (e) {
             console.error(e);
-            const errMsg = e.name === 'TimeoutError' ? "❌ Timeout web (lambat). Coba lagi." : `❌ Error: ${e.message}`;
-            if (msgId) await tg.tgEdit(userId, msgId, errMsg);
+            await tg.tgEdit(userId, msgId, `❌ Error: ${e.message}`);
         }
-
     } finally {
         if (actionInterval) clearInterval(actionInterval);
         release();
