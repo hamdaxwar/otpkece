@@ -1,5 +1,20 @@
 const tg = require('./helpers/telegram');
 
+// fungsi delay random (human-like)
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// fungsi human typing
+async function humanType(page, selector, text) {
+    await page.focus(selector);
+
+    for (const char of text) {
+        await page.keyboard.type(char);
+        await sleep(50 + Math.random() * 150); // delay random 50–200ms
+    }
+}
+
 async function performLogin(page, email, password, loginUrl) {
     try {
         console.log("[BROWSER] Membuka halaman login...");
@@ -9,28 +24,33 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 60000 
         });
 
-        // 🕒 Delay agar halaman benar-benar stabil
-        const delayMs = 4000;
-        console.log(`[BROWSER] Menunggu stabilitas browser (${delayMs/1000} detik)...`);
-        await page.waitForTimeout(delayMs);
+        // ⏳ Tunggu 10 detik setelah halaman load
+        console.log("[BROWSER] Menunggu 10 detik sebelum mulai login...");
+        await sleep(10000);
 
-        // 🔎 Selector fleksibel (lebih tahan perubahan UI)
-        const emailSelector = "input[type='email'], input[name='email'], input[type='text']";
+        // selector fleksibel
+        const emailSelector = "input[type='email'], input[name='email']";
         const passSelector  = "input[type='password']";
         const btnSelector   = "button[type='submit'], input[type='submit']";
 
-        console.log("[BROWSER] Menunggu input email...");
+        console.log("[BROWSER] Mencari input email...");
         await page.waitForSelector(emailSelector, { timeout: 20000 });
 
-        console.log("[BROWSER] Mengisi email...");
+        // 🧹 bersihkan field email
         await page.click(emailSelector, { clickCount: 3 });
-        await page.type(emailSelector, email, { delay: 50 });
+        await page.keyboard.press('Backspace');
 
-        console.log("[BROWSER] Mengisi password...");
+        console.log("[BROWSER] Human typing email...");
+        await humanType(page, emailSelector, email);
+
+        // 🧹 bersihkan field password
         await page.click(passSelector, { clickCount: 3 });
-        await page.type(passSelector, password, { delay: 50 });
+        await page.keyboard.press('Backspace');
 
-        // 📸 Screenshot sebelum klik login
+        console.log("[BROWSER] Human typing password...");
+        await humanType(page, passSelector, password);
+
+        // 📸 screenshot sebelum klik login
         const imgBefore = "login_before.png";
         await page.screenshot({ path: imgBefore });
 
@@ -38,54 +58,43 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
                 imgBefore,
-                "🟡 Sebelum klik login"
+                "🟡 Sebelum klik login (human typing)"
             ).catch(()=>{});
         }
 
-        console.log("[BROWSER] Klik Sign In...");
-        await Promise.all([
-            page.click(btnSelector),
-            page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(()=>{})
+        // 🕒 delay kecil sebelum klik tombol
+        await sleep(800 + Math.random() * 1200);
+
+        console.log("[BROWSER] Klik tombol Sign In...");
+        await page.click(btnSelector);
+
+        // tunggu kemungkinan redirect / SPA
+        await Promise.race([
+            page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(()=>{}),
+            sleep(5000)
         ]);
 
-        // 🕒 Delay setelah login
-        await page.waitForTimeout(3000);
-
-        const currentUrl = page.url();
-        console.log("[DEBUG URL]", currentUrl);
-
-        // ❌ Jika masih di halaman login
-        if (currentUrl.includes('login')) {
-            console.log("[BROWSER] Login gagal.");
-
-            const imgFail = "login_failed.png";
-            await page.screenshot({ path: imgFail });
-
-            if (process.env.ADMIN_ID) {
-                await tg.tgSendPhoto(
-                    process.env.ADMIN_ID,
-                    imgFail,
-                    "❌ Login gagal (masih di halaman login)"
-                ).catch(()=>{});
-            }
-
-            return false;
-        }
-
-        console.log("[BROWSER] Login berhasil.");
-
-        // ✅ Screenshot setelah login sukses
-        const imgOk = "login_success.png";
-        await page.screenshot({ path: imgOk });
+        // 📸 screenshot setelah klik login
+        const imgAfter = "login_after.png";
+        await page.screenshot({ path: imgAfter });
 
         if (process.env.ADMIN_ID) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
-                imgOk,
-                "✅ Login berhasil"
+                imgAfter,
+                "🟢 Setelah klik login"
             ).catch(()=>{});
         }
 
+        const currentUrl = page.url();
+        console.log("[DEBUG URL]", currentUrl);
+
+        if (currentUrl.includes('login')) {
+            console.log("[BROWSER] Login gagal (masih di halaman login).");
+            return false;
+        }
+
+        console.log("[BROWSER] Login berhasil.");
         return true;
 
     } catch (err) {
