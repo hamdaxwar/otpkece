@@ -1,47 +1,55 @@
 /**
  * Fungsi untuk menangani proses login dan navigasi paksa ke halaman GetNum
- * @param {import('playwright').Page} page 
+ * VERSI PUPPETEER-CORE (TERMUX FRIENDLY)
+ * @param {import('puppeteer-core').Page} page 
  * @param {string} email 
  * @param {string} password 
  * @param {string} loginUrl 
  */
 async function performLogin(page, email, password, loginUrl) {
     console.log("[BROWSER] Membuka halaman login...");
-    await page.goto(loginUrl, { waitUntil: 'load', timeout: 60000 });
+    // Puppeteer menggunakan 'networkidle2' sebagai padanan 'load/networkidle'
+    await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     
-    // TUNGGU CHROMIUM TERBUKA SEMPURNA SELAMA 2 DETIK
     console.log("[BROWSER] Menunggu stabilitas browser (2 detik)...");
     await new Promise(r => setTimeout(r, 2000));
 
-    // Tunggu input muncul berdasarkan selector DevTools asli
-    await page.waitForSelector("input[type='email']", { state: 'visible', timeout: 30000 });
+    // Tunggu input muncul. Di Puppeteer tidak ada properti { state: 'visible' } di dalam waitForSelector
+    // Kita gunakan waitForSelector standar.
+    await page.waitForSelector("input[type='email']", { timeout: 30000 });
     
     console.log("[BROWSER] Mengisi email dan password...");
-    await page.fill("input[type='email']", email); 
-    await page.fill("input[type='password']", password);
+    
+    // Puppeteer: Pastikan field kosong dulu sebelum mengetik
+    await page.click("input[type='email']", { clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    await page.type("input[type='email']", email, { delay: 50 }); 
+
+    await page.click("input[type='password']", { clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    await page.type("input[type='password']", password, { delay: 50 });
     
     console.log("[BROWSER] Menekan tombol Sign In...");
-    const loginBtn = page.locator("button[type='submit']");
-    await loginBtn.click();
+    // Puppeteer menggunakan selector standar untuk klik
+    await page.click("button[type='submit']");
 
-    // TUNGGU 3 DETIK SETELAH KLIK SUBMIT (PROSES LOGIN DI BELAKANG LAYAR)
     console.log("[BROWSER] Menunggu proses login selesai (3 detik)...");
     await new Promise(r => setTimeout(r, 3000));
 
     // PAKSA REDIRECT LANGSUNG KE GETNUM
     console.log("[BROWSER] Melakukan navigasi paksa ke: https://stexsms.com/mdashboard/getnum");
     await page.goto("https://stexsms.com/mdashboard/getnum", { 
-        waitUntil: 'networkidle', 
+        waitUntil: 'networkidle2', 
         timeout: 60000 
     });
 
     // Verifikasi apakah sudah di halaman yang benar
     try {
-        await page.waitForSelector("input[name='numberrange']", { state: 'visible', timeout: 15000 });
+        await page.waitForSelector("input[name='numberrange']", { timeout: 15000 });
         console.log("[BROWSER] KONFIRMASI: Berhasil berada di halaman GetNum.");
     } catch (e) {
         console.log("[BROWSER] Peringatan: Input range tidak ditemukan, mencoba refresh halaman...");
-        await page.reload({ waitUntil: 'networkidle' });
+        await page.reload({ waitUntil: 'networkidle2' });
     }
 }
 
