@@ -35,16 +35,58 @@ async function performLogin(page, email, password, loginUrl) {
         const currentUrl = page.url();
         console.log("[DEBUG URL]", currentUrl);
 
+        // ❌ Jika masih di halaman login → gagal
         if (currentUrl.includes('login')) {
-            console.log("[BROWSER] Login gagal (masih di login).");
+            console.log("[BROWSER] Login gagal (masih di halaman login).");
+
+            // 📸 screenshot gagal login
+            const img = "login_failed.png";
+            await page.screenshot({ path: img });
+
+            if (process.env.ADMIN_ID) {
+                await tg.tgSendPhoto(
+                    process.env.ADMIN_ID,
+                    img,
+                    "❌ Login gagal (masih di halaman login)"
+                ).catch(()=>{});
+            }
+
             return false;
         }
 
         console.log("[BROWSER] Login berhasil.");
+
+        // ✅ screenshot setelah login berhasil (opsional)
+        const imgOk = "login_success.png";
+        await page.screenshot({ path: imgOk });
+
+        if (process.env.ADMIN_ID) {
+            await tg.tgSendPhoto(
+                process.env.ADMIN_ID,
+                imgOk,
+                "✅ Login berhasil"
+            ).catch(()=>{});
+        }
+
         return true;
 
     } catch (err) {
         console.error("[LOGIN ERROR]", err.message);
+
+        // 📸 screenshot kalau error
+        try {
+            const imgErr = "login_error.png";
+            await page.screenshot({ path: imgErr });
+
+            if (process.env.ADMIN_ID) {
+                await tg.tgSendPhoto(
+                    process.env.ADMIN_ID,
+                    imgErr,
+                    "❌ Error login: " + err.message
+                ).catch(()=>{});
+            }
+        } catch(e){}
+
         return false;
     }
 }
