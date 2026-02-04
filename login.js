@@ -1,66 +1,69 @@
 const tg = require('./helpers/telegram');
 
-/**
- * Fungsi untuk menangani proses login dan navigasi paksa ke halaman GetNum
- * VERSI PUPPETEER-CORE (TERMUX FRIENDLY)
- */
 async function performLogin(page, email, password, loginUrl) {
     try {
-        const adminId = process.env.ADMIN_ID;
-
         console.log("[BROWSER] Membuka halaman login...");
-        await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        console.log("[BROWSER] Menunggu stabilitas browser...");
-        await new Promise(r => setTimeout(r, 2000));
-
-        await page.waitForSelector("input[type='email']", { timeout: 30000 });
-        
-        console.log("[BROWSER] Mengisi email dan password...");
-        
-        // Membersihkan field sebelum mengisi
-        await page.click("input[type='email']", { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.type("input[type='email']", email, { delay: 50 }); 
-
-        await page.click("input[type='password']", { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.type("input[type='password']", password, { delay: 50 });
-        
-        console.log("[BROWSER] Menekan tombol Sign In...");
-        await page.click("button[type='submit']");
-
-        // Tunggu sebentar untuk proses login
-        await new Promise(r => setTimeout(r, 4000));
-
-        // --- DEBUG SCREENSHOT ---
-        const ssPath = './debug_login.png';
-        await page.screenshot({ path: ssPath });
-        if (adminId) {
-            await tg.tgSendPhoto(adminId, ssPath, `<b>DEBUG LOGIN</b>\nURL: <code>${page.url()}</code>`).catch(() => {});
-        }
-
-        // PAKSA REDIRECT LANGSUNG KE GETNUM
-        console.log("[BROWSER] Navigasi paksa ke GetNum...");
-        await page.goto("https://stexsms.com/mdashboard/getnum", { 
+        // Gunakan networkidle2 (menunggu koneksi internet stabil)
+        await page.goto(loginUrl, { 
             waitUntil: 'networkidle2', 
             timeout: 60000 
         });
 
-        // Verifikasi keberhasilan
+        // Jeda tambahan untuk render JavaScript di Termux
+        await new Promise(r => setTimeout(r, 5000));
+
+        // --- VALIDASI SELECTOR ---
+        console.log("[BROWSER] Mencari input form...");
         try {
-            await page.waitForSelector("input[name='numberrange']", { timeout: 15000 });
-            console.log("[BROWSER] KONFIRMASI: Berhasil di halaman GetNum.");
-            return true;
+            // Tunggu selector berdasarkan name sesuai HTML yang kamu kirim
+            await page.waitForSelector("input[name='email']", { timeout: 15000 });
         } catch (e) {
-            console.log("[BROWSER] Gagal verifikasi halaman dashboard.");
+            // Jika gagal, ambil screenshot untuk investigasi
+            await page.screenshot({ path: 'login_error.png' });
+            if (process.env.ADMIN_ID) {
+                await tg.tgSendPhoto(process.env.ADMIN_ID, 'login_error.png', "❌ Selector email tidak ditemukan. Cek screenshot!").catch(()=>{});
+            }
+            throw new Error("Selector input[name='email'] tidak ditemukan");
+        }
+
+        // --- PROSES INPUT ---
+        console.log("[BROWSER] Memasukkan kredensial...");
+        
+        // Klik dan bersihkan field email
+        await page.click("input[name='email']", { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await page.type("input[name='email']", email, { delay: 50 });
+
+        // Klik dan bersihkan field password
+        await page.click("input[name='password']", { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await page.type("input[name='password']", password, { delay: 50 });
+
+        // Klik tombol Sign In
+        console.log("[BROWSER] Menekan tombol Sign In...");
+        await Promise.all([
+            page.click("button[type='submit']"),
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+        ]);
+
+        // Beri waktu setelah redirect
+        await new Promise(r => setTimeout(r, 5000));
+
+        // Cek apakah login berhasil dengan melihat URL atau element dashboard
+        const currentUrl = page.url();
+        if (currentUrl.includes('login')) {
+            console.log("[BROWSER] Login gagal (Masih di halaman login).");
             return false;
         }
+
+        console.log("[BROWSER] Login Berhasil. URL saat ini:", currentUrl);
+        return true;
+
     } catch (err) {
         console.error("[LOGIN ERROR]", err.message);
         return false;
     }
 }
 
-// EKSPOR DALAM BENTUK OBJEK (Penting agar tidak error "not a function")
 module.exports = { performLogin };
