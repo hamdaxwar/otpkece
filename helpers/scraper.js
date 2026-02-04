@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer-core');
 const config = require('../config');
-const { performLogin } = require('../login'); // Pastikan path ini benar
+const { performLogin } = require('../login'); 
 const { state, playwrightLock } = require('./state');
 const db = require('./database');
 const tg = require('./telegram');
@@ -17,9 +17,9 @@ function normalizeNumber(number) {
 
 function getProgressMessage(currentStep, totalSteps, prefixRange, numCount) {
     const progressRatio = Math.min(currentStep / 12, 1.0);
-    const filledCount = Math.ceil(progressRatio * (config.BAR?.MAX_LENGTH || 10));
-    const emptyCount = (config.BAR?.MAX_LENGTH || 10) - filledCount;
-    const bar = (config.BAR?.FILLED || "■").repeat(filledCount) + (config.BAR?.EMPTY || "□").repeat(emptyCount);
+    const filledCount = Math.ceil(progressRatio * (config.BAR?.MAX_LENGTH || 12));
+    const emptyCount = (config.BAR?.MAX_LENGTH || 12) - filledCount;
+    const bar = (config.BAR?.FILLED || "█").repeat(filledCount) + (config.BAR?.EMPTY || "░").repeat(emptyCount);
 
     let status = config.STATUS_MAP ? config.STATUS_MAP[currentStep] : "Processing...";
     
@@ -37,7 +37,7 @@ async function initBrowser() {
         console.log("[BROWSER] Launching Chromium (Puppeteer) in Termux...");
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
-            headless: true, // Ubah ke false jika ingin melihat prosesnya di VNC/GUI
+            headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -50,22 +50,25 @@ async function initBrowser() {
 
         state.sharedPage = await state.browser.newPage();
         
-        // Set User Agent Manual agar tidak terdeteksi bot standar
+        // Set User Agent Mobile agar pas dengan URL /mauth/
         await state.sharedPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         console.log("[BROWSER] Menjalankan proses login...");
-        // Memanggil fungsi dari login.js
+        
+        // FIX: Mengambil URL dari config, bukan hardcoded lagi
         const loginSuccess = await performLogin(
             state.sharedPage, 
-            process.env.STEX_EMAIL, 
-            process.env.STEX_PASSWORD, 
-            "https://stexsms.com/login"
+            config.STEX_EMAIL, 
+            config.STEX_PASSWORD, 
+            config.LOGIN_URL 
         );
 
         if (loginSuccess) {
             console.log("[BROWSER] Sesi Browser Siap.");
         } else {
             console.error("[BROWSER ERROR] Login tidak berhasil.");
+            // Ambil screenshot jika gagal login untuk debug
+            await state.sharedPage.screenshot({ path: 'login_failed_final.png' });
         }
     } catch (e) {
         console.error(`[BROWSER FATAL] ${e.message}`);
@@ -91,8 +94,9 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 
         if (!data || !data.numberRaw) return null;
         
-        // Skip nomor yang sudah selesai atau gagal
-        if (data.statusText.includes("success") || data.statusText.includes("failed") || data.statusText.includes("expired")) {
+        // Filter status yang tidak diinginkan
+        const forbiddenStatus = ["success", "failed", "expired", "used"];
+        if (forbiddenStatus.some(s => data.statusText.includes(s))) {
             return null;
         }
 
@@ -109,7 +113,6 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 
 async function getAllNumbersParallel(page, numToFetch) {
     const tasks = [];
-    // Scan 15 baris pertama untuk mencari nomor aktif
     for (let i = 1; i <= 15; i++) {
         tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page));
     }
@@ -136,11 +139,10 @@ async function actionTask(userId) {
 }
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
-    let msgId = messageIdToEdit || (state.pendingMessage ? state.pendingMessage[userId] : null);
+    let msgId = messageIdToEdit; 
     let actionInterval = null;
     const numToFetch = parseInt(clickCount);
 
-    // Lock agar tidak ada 2 user menjalankan browser bersamaan (menghindari crash Termux)
     const release = await playwrightLock.acquire();
     
     try {
@@ -151,24 +153,28 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
             msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
         }
 
-        // Cek apakah page masih hidup
         if (!state.sharedPage || state.sharedPage.isClosed()) {
              await initBrowser();
         }
 
         const page = state.sharedPage;
+        
+        // Pastikan kita ada di TARGET_URL (Halaman GetNum)
+        if (!page.url().includes('getnum')) {
+            console.log("[SCRAPER] Mengarahkan ke halaman TARGET...");
+            await page.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
+        }
+
         const INPUT_SELECTOR = "input[name='numberrange']";
         
-        // Input Range
         await page.waitForSelector(INPUT_SELECTOR, { timeout: 15000 });
         await page.click(INPUT_SELECTOR, { clickCount: 3 }); 
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix);
         
-        currentStep = 2;
+        currentStep = 3;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        // Klik Tombol Get Number
         const BUTTON_SELECTOR = "//button[contains(text(), 'Get Number')]";
         await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { timeout: 10000 });
 
@@ -177,30 +183,27 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
                 const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
                 if (btn) btn.click();
             }, BUTTON_SELECTOR);
-            await new Promise(r => setTimeout(r, 400)); 
+            await new Promise(r => setTimeout(r, 500)); 
         }
 
-        currentStep = 5;
+        currentStep = 8;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        // --- Scanning ---
         let foundNumbers = [];
-        // Coba scan selama maksimal 15 detik
-        const maxWait = 15;
+        const maxWait = 20; // Naikkan ke 20 detik untuk Termux
         const startTime = Date.now() / 1000;
 
         while ((Date.now() / 1000 - startTime) < maxWait) {
             foundNumbers = await getAllNumbersParallel(page, numToFetch);
             if (foundNumbers.length >= numToFetch) break;
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 1500));
         }
 
         if (foundNumbers.length === 0) {
-            await tg.tgEdit(userId, msgId, "❌ <b>Gagal Mendapatkan Nomor.</b>\nRange mungkin kosong atau lemot. Silakan coba lagi.");
+            await tg.tgEdit(userId, msgId, "❌ <b>Gagal Mendapatkan Nomor.</b>\nRange kosong atau server sedang sibuk.");
             return;
         }
 
-        // --- Output Berhasil ---
         currentStep = 12;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
@@ -210,7 +213,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         let msg = `✅ <b>Numbers Ready!</b>\n\n`;
         foundNumbers.slice(0, numToFetch).forEach((entry) => {
             msg += `📱 <code>${entry.number}</code>\n`;
-            // Simpan ke database
             db.saveCache({ number: entry.number, country: entry.country, user_id: userId, time: Date.now() });
             db.addToWaitList(entry.number, userId, usernameTg, firstNameTg);
         });
@@ -230,7 +232,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> ${e.message}`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
-        release(); // Lepas kunci lock agar user lain bisa pakai browser
+        release(); 
     }
 }
 
