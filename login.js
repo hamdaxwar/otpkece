@@ -1,6 +1,9 @@
+const tg = require('./helpers/telegram');
+const config = require('./config');
+const fs = require('fs');
+
 /**
- * Fungsi untuk menangani proses login dan navigasi paksa ke halaman GetNum
- * VERSI PUPPETEER-CORE (TERMUX FRIENDLY)
+ * Fungsi untuk menangani proses login dengan fitur Screenshot Otomatis ke Admin
  * @param {import('puppeteer-core').Page} page 
  * @param {string} email 
  * @param {string} password 
@@ -8,15 +11,14 @@
  */
 async function performLogin(page, email, password, loginUrl) {
     try {
+        const adminId = config.adminId || config.ownerId; // Ambil ID admin dari config
+
         console.log("[BROWSER] Membuka halaman login...");
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        // Pastikan selector input sudah muncul
         await page.waitForSelector("input[type='email']", { timeout: 30000 });
         
         console.log("[BROWSER] Membersihkan dan mengisi data login...");
-        
-        // Gunakan evaluate agar pembersihan input lebih bersih dan cepat
         await page.evaluate(() => {
             const emailInp = document.querySelector("input[type='email']");
             const passInp = document.querySelector("input[type='password']");
@@ -24,38 +26,39 @@ async function performLogin(page, email, password, loginUrl) {
             if (passInp) passInp.value = '';
         });
 
-        // Ketik dengan delay kecil agar tidak terdeteksi bot sangat cepat
-        await page.type("input[type='email']", email, { delay: 50 }); 
-        await page.type("input[type='password']", password, { delay: 50 });
+        await page.type("input[type='email']", email, { delay: 100 }); 
+        await page.type("input[type='password']", password, { delay: 100 });
         
         console.log("[BROWSER] Menekan tombol Sign In...");
+        await page.click("button[type='submit']");
+
+        // --- PROSES DEBUG SCREENSHOT ---
+        console.log("[DEBUG] Menunggu 3 detik untuk menangkap hasil klik...");
+        await new Promise(r => setTimeout(r, 3000)); 
         
-        // Eksekusi klik dan tunggu navigasi secara paralel
-        await Promise.all([
-            page.click("button[type='submit']"),
-            // Kita tunggu sampai URL berubah (tidak lagi mengandung kata 'login')
-            page.waitForFunction(
-                (oldUrl) => !window.location.href.includes('login') && window.location.href !== oldUrl,
-                { timeout: 30000 },
-                loginUrl
-            ).catch(() => console.log("[BROWSER] Menunggu perubahan URL secara manual..."))
-        ]);
+        const screenshotPath = './login_status.png';
+        await page.screenshot({ path: screenshotPath });
 
-        // Jeda sangat singkat untuk sinkronisasi cookies
-        await new Promise(r => setTimeout(r, 2000));
-
-        const finalUrl = page.url();
-
-        // LOGIKA PENGECEKAN URL
-        if (finalUrl.includes('login')) {
-            console.error("❌ [LOGIN GAGAL] URL masih di halaman login. Periksa Email/Pass atau Captcha.");
-            
-            // Opsional: Ambil SS jika gagal untuk debug
-            await page.screenshot({ path: 'login_failed.png' });
-            return false;
-        } else {
-            console.log(`✅ [LOGIN BERHASIL] Redirected ke: ${finalUrl}`);
+        if (adminId) {
+            console.log("[SYSTEM] Mengirim screenshot status login ke Admin...");
+            // Menggunakan helper telegram untuk kirim file
+            // Jika tgSendPhoto tidak ada, kita pakai tgSendDocument (asumsi helper kamu punya ini)
+            try {
+                await tg.tgSendPhoto(adminId, screenshotPath, `📸 **Status Login Browser**\nURL: ${page.url()}`);
+            } catch (err) {
+                console.log("[ERROR] Gagal kirim foto, pastikan helper tgSendPhoto tersedia.");
+            }
         }
+        // -------------------------------
+
+        // Cek apakah URL berubah (berhasil login)
+        const finalUrl = page.url();
+        if (finalUrl.includes('login')) {
+            console.error("❌ [LOGIN GAGAL] Masih tertahan di halaman login.");
+            return false;
+        }
+
+        console.log(`✅ [LOGIN BERHASIL] Redirected ke: ${finalUrl}`);
 
         // PAKSA KE HALAMAN TARGET (GETNUM)
         console.log("[BROWSER] Menuju halaman dashboard...");
@@ -64,13 +67,13 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 60000 
         });
 
-        // Verifikasi akhir apakah elemen dashboard muncul
+        // Verifikasi apakah elemen dashboard sudah muncul
         try {
             await page.waitForSelector("input[name='numberrange']", { timeout: 15000 });
             console.log("🚀 [SYSTEM] Dashboard siap digunakan.");
             return true;
         } catch (e) {
-            console.log("⚠️ [WARNING] Dashboard termuat tapi input range belum muncul, mencoba reload...");
+            console.log("⚠️ [WARNING] Input range belum muncul, mencoba reload...");
             await page.reload({ waitUntil: 'networkidle2' });
             return false;
         }
