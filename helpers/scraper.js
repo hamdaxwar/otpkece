@@ -33,29 +33,52 @@ async function initBrowser() {
         if (state.browser) {
             try { await state.browser.close(); } catch(e){}
         }
-        
-        console.log("[BROWSER] Launching Chromium (Puppeteer) in Termux...");
+
+        console.log("[BROWSER] Launching Chromium (Termux Mode)...");
+
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
-            headless: true, 
+            headless: true,
+            protocolTimeout: 120000, // 🔥 penting
             args: [
-                '--no-sandbox', 
+                '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--no-zygote',
-                '--single-process'
+                '--single-process',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-sync',
+                '--disable-translate',
+                '--disable-default-apps',
+                '--disable-blink-features=AutomationControlled'
             ]
         });
 
         state.sharedPage = await state.browser.newPage();
-        
-        // Set User Agent Mobile agar pas dengan URL /mauth/
-        await state.sharedPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // 🔥 Timeout global page
+        state.sharedPage.setDefaultTimeout(120000);
+        state.sharedPage.setDefaultNavigationTimeout(120000);
+
+        // 🔥 Block resource berat (biar ringan)
+        await state.sharedPage.route('**/*', route => {
+            const type = route.request().resourceType();
+            if (['image', 'font', 'media'].includes(type)) {
+                route.abort();
+            } else {
+                route.continue();
+            }
+        });
+
+        // Mobile UA
+        await state.sharedPage.setUserAgent(
+            'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+        );
 
         console.log("[BROWSER] Menjalankan proses login...");
-        
-        // FIX: Mengambil URL dari config, bukan hardcoded lagi
+
         const loginSuccess = await performLogin(
             state.sharedPage, 
             config.STEX_EMAIL, 
@@ -67,9 +90,9 @@ async function initBrowser() {
             console.log("[BROWSER] Sesi Browser Siap.");
         } else {
             console.error("[BROWSER ERROR] Login tidak berhasil.");
-            // Ambil screenshot jika gagal login untuk debug
             await state.sharedPage.screenshot({ path: 'login_failed_final.png' });
         }
+
     } catch (e) {
         console.error(`[BROWSER FATAL] ${e.message}`);
     }
@@ -93,12 +116,9 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
         }, rowSelector);
 
         if (!data || !data.numberRaw) return null;
-        
-        // Filter status yang tidak diinginkan
+
         const forbiddenStatus = ["success", "failed", "expired", "used"];
-        if (forbiddenStatus.some(s => data.statusText.includes(s))) {
-            return null;
-        }
+        if (forbiddenStatus.some(s => data.statusText.includes(s))) return null;
 
         const number = data.numberRaw.replace(/[\s-]/g, "");
         if (db.isInCache && db.isInCache(number)) return null;
@@ -117,10 +137,10 @@ async function getAllNumbersParallel(page, numToFetch) {
         tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page));
     }
     const results = await Promise.all(tasks);
-    
+
     const currentNumbers = [];
     const seen = new Set();
-    
+
     for (const res of results) {
         if (res && res.number && !seen.has(res.number)) {
             currentNumbers.push(res);
@@ -144,7 +164,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
     const numToFetch = parseInt(clickCount);
 
     const release = await playwrightLock.acquire();
-    
+
     try {
         actionInterval = await actionTask(userId);
         let currentStep = 0;
@@ -154,43 +174,46 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         if (!state.sharedPage || state.sharedPage.isClosed()) {
-             await initBrowser();
+            await initBrowser();
         }
 
         const page = state.sharedPage;
-        
-        // Pastikan kita ada di TARGET_URL (Halaman GetNum)
+
+        // 🔥 jangan pakai networkidle2 (berat di Termux)
         if (!page.url().includes('getnum')) {
             console.log("[SCRAPER] Mengarahkan ke halaman TARGET...");
-            await page.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
+            await page.goto(config.TARGET_URL, { 
+                waitUntil: 'domcontentloaded', 
+                timeout: 120000 
+            });
         }
 
         const INPUT_SELECTOR = "input[name='numberrange']";
-        
-        await page.waitForSelector(INPUT_SELECTOR, { timeout: 15000 });
-        await page.click(INPUT_SELECTOR, { clickCount: 3 }); 
+
+        await page.waitForSelector(INPUT_SELECTOR, { timeout: 30000 });
+        await page.click(INPUT_SELECTOR, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix);
-        
+
         currentStep = 3;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
         const BUTTON_SELECTOR = "//button[contains(text(), 'Get Number')]";
-        await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { timeout: 10000 });
+        await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { timeout: 30000 });
 
         for (let i = 0; i < numToFetch; i++) {
             await page.evaluate((sel) => {
                 const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
                 if (btn) btn.click();
             }, BUTTON_SELECTOR);
-            await new Promise(r => setTimeout(r, 500)); 
+            await new Promise(r => setTimeout(r, 700)); // 🔥 agak diperlambat
         }
 
         currentStep = 8;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
         let foundNumbers = [];
-        const maxWait = 20; // Naikkan ke 20 detik untuk Termux
+        const maxWait = 30; // 🔥 lebih lama untuk Termux
         const startTime = Date.now() / 1000;
 
         while ((Date.now() / 1000 - startTime) < maxWait) {
@@ -200,7 +223,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         if (foundNumbers.length === 0) {
-            await tg.tgEdit(userId, msgId, "❌ <b>Gagal Mendapatkan Nomor.</b>\nRange kosong atau server sedang sibuk.");
+            await tg.tgEdit(userId, msgId, "❌ <b>Gagal Mendapatkan Nomor.</b>\nRange kosong atau server sibuk.");
             return;
         }
 
@@ -232,7 +255,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> ${e.message}`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
-        release(); 
+        release();
     }
 }
 
