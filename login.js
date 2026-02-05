@@ -11,7 +11,7 @@ async function humanType(page, selector, text) {
 
     for (const char of text) {
         await page.keyboard.type(char);
-        await sleep(50 + Math.random() * 150); // delay random 50–200ms
+        await sleep(60 + Math.random() * 120); // delay lebih stabil
     }
 }
 
@@ -19,38 +19,41 @@ async function performLogin(page, email, password, loginUrl) {
     try {
         console.log("[BROWSER] Membuka halaman login...");
 
+        // 🔥 Timeout global (penting untuk Termux)
+        page.setDefaultTimeout(120000);
+        page.setDefaultNavigationTimeout(120000);
+
         await page.goto(loginUrl, { 
-            waitUntil: 'load', 
-            timeout: 60000 
+            waitUntil: 'domcontentloaded', // 🔥 jangan load (berat)
+            timeout: 120000
         });
 
-        // ⏳ Tunggu 10 detik setelah halaman load
-        console.log("[BROWSER] Menunggu 10 detik sebelum mulai login...");
-        await sleep(10000);
+        // ⏳ tunggu page stabil
+        console.log("[BROWSER] Menunggu page stabil...");
+        await sleep(5000);
 
-        // selector fleksibel
         const emailSelector = "input[type='email'], input[name='email']";
         const passSelector  = "input[type='password']";
         const btnSelector   = "button[type='submit'], input[type='submit']";
 
         console.log("[BROWSER] Mencari input email...");
-        await page.waitForSelector(emailSelector, { timeout: 20000 });
+        await page.waitForSelector(emailSelector, { timeout: 30000 });
 
-        // 🧹 bersihkan field email
+        // 🧹 bersihkan email
         await page.click(emailSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
 
         console.log("[BROWSER] Human typing email...");
         await humanType(page, emailSelector, email);
 
-        // 🧹 bersihkan field password
+        // 🧹 bersihkan password
         await page.click(passSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
 
         console.log("[BROWSER] Human typing password...");
         await humanType(page, passSelector, password);
 
-        // 📸 screenshot sebelum klik login
+        // 📸 screenshot sebelum login
         const imgBefore = "login_before.png";
         await page.screenshot({ path: imgBefore });
 
@@ -58,23 +61,26 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
                 imgBefore,
-                "🟡 Sebelum klik login (human typing)"
+                "🟡 Sebelum klik login"
             ).catch(()=>{});
         }
 
-        // 🕒 delay kecil sebelum klik tombol
-        await sleep(800 + Math.random() * 1200);
+        // 🕒 delay sebelum klik
+        await sleep(700 + Math.random() * 1300);
 
-        console.log("[BROWSER] Klik tombol Sign In...");
+        console.log("[BROWSER] Klik tombol login...");
         await page.click(btnSelector);
 
-        // tunggu kemungkinan redirect / SPA
+        // 🔥 jangan tunggu navigation terlalu lama
         await Promise.race([
-            page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(()=>{}),
-            sleep(5000)
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(()=>{}),
+            sleep(4000)
         ]);
 
-        // 📸 screenshot setelah klik login
+        // ⏳ tunggu JS SPA settle
+        await sleep(3000);
+
+        // 📸 screenshot setelah login
         const imgAfter = "login_after.png";
         await page.screenshot({ path: imgAfter });
 
@@ -89,7 +95,8 @@ async function performLogin(page, email, password, loginUrl) {
         const currentUrl = page.url();
         console.log("[DEBUG URL]", currentUrl);
 
-        if (currentUrl.includes('login')) {
+        // 🔥 validasi login lebih fleksibel
+        if (currentUrl.includes('login') || currentUrl.includes('signin')) {
             console.log("[BROWSER] Login gagal (masih di halaman login).");
             return false;
         }
