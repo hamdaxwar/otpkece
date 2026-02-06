@@ -5,8 +5,7 @@ const { state } = require('./state');
 const db = require('./database');
 const tg = require('./telegram');
 
-// ================== HELPER ==================
-
+// ================== HELPERS ==================
 function normalizeNumber(number) {
     let norm = String(number).trim().replace(/[\s-]/g, "");
     if (!norm.startsWith('+') && /^\d+$/.test(norm)) {
@@ -27,15 +26,13 @@ function getProgressMessage(currentStep, totalSteps, prefixRange, numCount) {
 }
 
 // ================== BROWSER ==================
-
 async function initBrowser() {
     try {
         if (state.browser) {
             try { await state.browser.close(); } catch(e){}
         }
 
-        console.log("[BROWSER] Launching Chromium (Termux Mode)...");
-
+        console.log("[BROWSER] Launching Chromium...");
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
             headless: true,
@@ -50,18 +47,12 @@ async function initBrowser() {
             ]
         });
 
-        // ================= LOGIN PAGE =================
+        // ================= LOGIN =================
         const loginPage = await state.browser.newPage();
-
-        // ⚠️ JANGAN BLOK CSS & SCRIPT!
         await loginPage.setRequestInterception(true);
         loginPage.on('request', req => {
-            const type = req.resourceType();
-            if (['image', 'media', 'font'].includes(type)) {
-                req.abort(); // hemat resource
-            } else {
-                req.continue(); // CSS & JS tetap jalan
-            }
+            if (['image', 'media', 'font'].includes(req.resourceType())) req.abort();
+            else req.continue();
         });
 
         await loginPage.setUserAgent(
@@ -69,7 +60,6 @@ async function initBrowser() {
         );
 
         console.log("[BROWSER] Menjalankan login...");
-
         const loginSuccess = await performLogin(
             loginPage,
             config.STEX_EMAIL,
@@ -79,14 +69,8 @@ async function initBrowser() {
 
         const loginShot = 'login_status.png';
         await loginPage.screenshot({ path: loginShot });
-
-        // kirim screenshot ke admin
         if (process.env.ADMIN_ID) {
-            await tg.tgSendPhoto(
-                process.env.ADMIN_ID,
-                loginShot,
-                loginSuccess ? "✅ Login sukses" : "❌ Login gagal"
-            ).catch(()=>{});
+            await tg.tgSendPhoto(process.env.ADMIN_ID, loginShot, loginSuccess ? "✅ Login sukses" : "❌ Login gagal").catch(()=>{});
         }
 
         if (!loginSuccess) {
@@ -96,25 +80,18 @@ async function initBrowser() {
 
         console.log("[BROWSER] Login sukses.");
 
-        // ================= SHARED PAGE (SCRAPER) =================
+        // ================= SHARED PAGE =================
         state.sharedPage = await state.browser.newPage();
-
         await state.sharedPage.setRequestInterception(true);
         state.sharedPage.on('request', req => {
-            const type = req.resourceType();
-            if (['image', 'media', 'font'].includes(type)) {
-                req.abort();
-            } else {
-                req.continue();
-            }
+            if (['image', 'media', 'font'].includes(req.resourceType())) req.abort();
+            else req.continue();
         });
-
         await state.sharedPage.setUserAgent(
             'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36'
         );
 
         return true;
-
     } catch (e) {
         console.error("[BROWSER FATAL]", e.message);
         return false;
@@ -122,7 +99,6 @@ async function initBrowser() {
 }
 
 // ================== SCRAPING ==================
-
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
         const data = await page.evaluate((sel) => {
@@ -141,7 +117,6 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
         }, rowSelector);
 
         if (!data || !data.numberRaw) return null;
-
         const forbiddenStatus = ["success", "failed", "expired", "used"];
         if (forbiddenStatus.some(s => data.statusText.includes(s))) return null;
 
@@ -150,7 +125,6 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 
         if (number.length > 5) return { number: normalizeNumber(number), country: data.country };
         return null;
-
     } catch {
         return null;
     }
@@ -175,52 +149,43 @@ async function getAllNumbersParallel(page, numToFetch) {
     return currentNumbers;
 }
 
-// ================== MAIN PROCESS ==================
-
-async function actionTask(userId) {
-    return setInterval(() => {
-        tg.tgSendAction(userId, "typing").catch(() => {});
-    }, 4500);
-}
-
+// ================== USER INPUT PROCESS ==================
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     let msgId = messageIdToEdit; 
     let actionInterval = null;
     const numToFetch = parseInt(clickCount);
 
-    try {
-        actionInterval = await actionTask(userId);
-        let currentStep = 0;
+    console.log(`[DEBUG] processUserInput dipanggil | user: ${userId}, prefix: ${prefix}, count: ${numToFetch}`);
 
-        if (!msgId) {
-            msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-        }
+    try {
+        actionInterval = setInterval(() => { tg.tgSendAction(userId, "typing").catch(() => {}); }, 4500);
+
+        let currentStep = 0;
+        if (!msgId) msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
         if (!state.sharedPage || state.sharedPage.isClosed()) {
+            console.log("[DEBUG] sharedPage kosong atau closed, initBrowser dipanggil...");
             const ok = await initBrowser();
             if (!ok) throw new Error("Login gagal, browser tidak siap.");
         }
 
         const page = state.sharedPage;
-
         if (!page.url().includes('getnum')) {
-            console.log("[SCRAPER] Ke halaman target...");
+            console.log(`[DEBUG] Navigasi ke TARGET_URL: ${config.TARGET_URL}`);
             await page.goto(config.TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+            console.log("[DEBUG] Navigasi selesai");
         }
 
         const INPUT_SELECTOR = "input[name='numberrange']";
-
         await page.waitForSelector(INPUT_SELECTOR, { timeout: 20000 });
         await page.click(INPUT_SELECTOR, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix);
-
         currentStep = 3;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
         const BUTTON_SELECTOR = "//button[contains(text(), 'Get Number')]";
         await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { timeout: 20000 });
-
         for (let i = 0; i < numToFetch; i++) {
             await page.evaluate((sel) => {
                 const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
@@ -234,7 +199,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         let foundNumbers = [];
         const startTime = Date.now() / 1000;
-
         while ((Date.now() / 1000 - startTime) < 25) {
             foundNumbers = await getAllNumbersParallel(page, numToFetch);
             if (foundNumbers.length >= numToFetch) break;
@@ -266,14 +230,15 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
                 [{ text: "🌐 Menu Utama", callback_data: "getnum" }]
             ]
         };
-
         await tg.tgEdit(userId, msgId, msg, inlineKb);
+        console.log("[DEBUG] Nomor dikirim ke Telegram");
 
     } catch (e) {
         console.error("[SCRAPER ERROR]", e);
-        await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> ${e.message}`);
+        if (msgId) await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> ${e.message}`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
+        console.log("[DEBUG] processUserInput selesai");
     }
 }
 
