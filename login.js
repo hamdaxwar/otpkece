@@ -1,6 +1,6 @@
 const tg = require('./helpers/telegram');
 
-// delay
+// delay helper
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -24,12 +24,12 @@ async function performLogin(page, email, password, loginUrl) {
         page.setDefaultNavigationTimeout(120000);
 
         await page.goto(loginUrl, { 
-            waitUntil: 'domcontentloaded',
+            waitUntil: 'networkidle2',
             timeout: 120000
         });
 
         console.log("[BROWSER] Menunggu page stabil...");
-        await sleep(4000);
+        await sleep(5000);
 
         // selector fleksibel
         const emailSelector = `
@@ -38,28 +38,26 @@ async function performLogin(page, email, password, loginUrl) {
             input[name='username'],
             input[type='text']
         `;
-        const passSelector  = "input[type='password']";
+        const passSelector = "input[type='password']";
 
-        console.log("[BROWSER] Mencari input email...");
+        console.log("[BROWSER] Cari input email...");
         await page.waitForSelector(emailSelector, { timeout: 30000 });
 
-        // bersihkan email
+        // clear email
         await page.click(emailSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
 
-        console.log("[BROWSER] Human typing email...");
+        console.log("[BROWSER] Ketik email...");
         await humanType(page, emailSelector, email);
 
-        await sleep(500);
-
-        console.log("[BROWSER] Mencari input password...");
+        console.log("[BROWSER] Cari input password...");
         await page.waitForSelector(passSelector, { timeout: 30000 });
 
-        // bersihkan password
+        // clear password
         await page.click(passSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
 
-        console.log("[BROWSER] Human typing password...");
+        console.log("[BROWSER] Ketik password...");
         await humanType(page, passSelector, password);
 
         // screenshot sebelum login
@@ -76,19 +74,38 @@ async function performLogin(page, email, password, loginUrl) {
 
         await sleep(800 + Math.random() * 1200);
 
-        // 🔥 LOGIN VIA ENTER (bukan klik tombol)
         console.log("[BROWSER] Tekan ENTER untuk login...");
-        await page.keyboard.press("Enter");
+        await page.keyboard.press('Enter');
 
-        // tunggu redirect / perubahan halaman
+        // tunggu perubahan halaman
         await Promise.race([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{}),
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(()=>{}),
             sleep(5000)
         ]);
 
+        console.log("[BROWSER] Menunggu redirect dashboard/getnum...");
+
+        // 🔥 tunggu redirect max 30 detik
+        let success = false;
+        const start = Date.now();
+
+        while (Date.now() - start < 30000) {
+            const url = page.url();
+
+            if (
+                url.includes("dashboard") ||
+                url.includes("getnum")
+            ) {
+                success = true;
+                break;
+            }
+
+            await sleep(500);
+        }
+
         await sleep(2000);
 
-        // screenshot setelah login
+        // screenshot setelah redirect
         const imgAfter = "login_after.png";
         await page.screenshot({ path: imgAfter });
 
@@ -96,25 +113,32 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
                 imgAfter,
-                "🟢 Setelah login (ENTER)"
+                success
+                    ? "✅ Login sukses + redirect OK"
+                    : "⚠️ Login masuk tapi redirect belum terdeteksi"
             ).catch(()=>{});
         }
 
         const currentUrl = page.url();
         console.log("[DEBUG URL]", currentUrl);
 
-        // deteksi login sukses
-        if (
-            currentUrl.includes("dashboard") ||
-            currentUrl.includes("getnum") ||
-            !currentUrl.includes("login")
-        ) {
-            console.log("[BROWSER] ✅ Login berhasil.");
-            return true;
+        // 🔥 tambahan validasi element dashboard
+        let dashboardDetected = false;
+        try {
+            dashboardDetected = await page.evaluate(() => {
+                return document.body.innerText.includes("Welcome") ||
+                       document.body.innerText.includes("Dashboard") ||
+                       document.querySelector("a[href*='getnum']");
+            });
+        } catch {}
+
+        if (!success && !dashboardDetected) {
+            console.log("[BROWSER] ❌ Login gagal.");
+            return false;
         }
 
-        console.log("[BROWSER] ❌ Login gagal (masih di halaman login).");
-        return false;
+        console.log("[BROWSER] ✅ Login berhasil.");
+        return true;
 
     } catch (err) {
         console.error("[LOGIN ERROR]", err.message);
