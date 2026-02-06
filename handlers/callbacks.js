@@ -1,8 +1,24 @@
 const config = require('../config');
 const db = require('../helpers/database');
 const tg = require('../helpers/telegram');
-const { state } = require('../helpers/state');
+const state = require('../helpers/state'); // FIX 1: Import state secara utuh
 const scraper = require('../helpers/scraper');
+
+// Helper untuk memastikan user state terinisialisasi
+function getUserState(userId) {
+    if (!state.users) state.users = {};
+    if (!state.users[userId]) {
+        state.users[userId] = {
+            waitingAdminInput: false,
+            waitingBroadcastInput: false,
+            get10RangeInput: false,
+            waitingDanaInput: false,
+            manualRangeInput: false,
+            verified: false
+        };
+    }
+    return state.users[userId];
+}
 
 function generateInlineKeyboard(ranges) {
     const keyboard = [];
@@ -25,6 +41,9 @@ async function processCallback(cq) {
     const usernameTg = cq.from.username;
     const mention = usernameTg ? `@${usernameTg}` : `<a href='tg://user?id=${userId}'>${firstName}</a>`;
 
+    // Ambil state user (jika belum ada, otomatis dibuatkan)
+    const userState = getUserState(userId);
+
     if (dataCb === "verify") {
         if (!(await tg.isUserInBothGroups(userId))) {
             const kb = {
@@ -36,7 +55,7 @@ async function processCallback(cq) {
             };
             await tg.tgEdit(chatId, menuMsgId, "❌ Belum gabung kedua grup.", kb);
         } else {
-            state.verifiedUsers.add(userId);
+            userState.verified = true; // FIX 2: Pakai property objek
             db.saveUsers(userId);
             const prof = db.getUserProfile(userId, firstName);
             const fullName = usernameTg ? `${firstName} (@${usernameTg})` : firstName;
@@ -60,7 +79,7 @@ async function processCallback(cq) {
     }
 
     if (dataCb === "getnum") {
-        if (!state.verifiedUsers.has(userId)) {
+        if (!userState.verified) { // FIX 3: Cek status verifikasi dari state
             await tg.tgEdit(chatId, menuMsgId, "⚠️ Harap verifikasi dulu.");
             return;
         }
@@ -71,15 +90,15 @@ async function processCallback(cq) {
     }
 
     if (dataCb === "manual_range") {
-        if (!state.verifiedUsers.has(userId)) return;
-        state.manualRangeInput.add(userId);
+        if (!userState.verified) return;
+        userState.manualRangeInput = true; // FIX 4: Set status ke true
         await tg.tgEdit(chatId, menuMsgId, "<b>Input Manual Range</b>\n\nKirim Range anda, contoh: <code>2327600XXX</code>");
         state.pendingMessage[userId] = menuMsgId;
         return;
     }
 
     if (dataCb.startsWith("select_range:")) {
-        if (!state.verifiedUsers.has(userId)) return;
+        if (!userState.verified) return;
         const prefix = dataCb.split(":")[1];
         await tg.tgEdit(chatId, menuMsgId, scraper.getProgressMessage(0, 0, prefix, 1));
         scraper.processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
@@ -87,7 +106,7 @@ async function processCallback(cq) {
     }
 
     if (dataCb.startsWith("change_num:")) {
-        if (!state.verifiedUsers.has(userId)) return;
+        if (!userState.verified) return;
         const parts = dataCb.split(":");
         const numFetch = parseInt(parts[1]);
         const prefix = parts[2];
@@ -112,7 +131,7 @@ async function processCallback(cq) {
     }
 
     if (dataCb === "set_dana_cb") {
-        state.waitingDanaInput.add(userId);
+        userState.waitingDanaInput = true;
         await tg.tgEdit(chatId, menuMsgId, "Silahkan kirim dana dalam format:\n\n<code>08123456789\nNama Pemilik</code>");
         return;
     }
