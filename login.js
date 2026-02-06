@@ -60,10 +60,11 @@ async function performLogin(page, email, password, loginUrl) {
 
         await sleep(800);
 
-        console.log("[BROWSER] Tekan ENTER untuk login...");
+        console.log("[BROWSER] Tekan ENTER...");
         await page.keyboard.press("Enter");
 
-        // tunggu 4 detik lalu redirect paksa
+        // ⏳ tunggu 4 detik sebelum redirect paksa
+        console.log("[BROWSER] Tunggu 4 detik sebelum redirect...");
         await sleep(4000);
 
         console.log("[BROWSER] Redirect paksa ke dashboard...");
@@ -72,6 +73,8 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 120000
         });
 
+        // ⏳ tunggu halaman stabil sebelum cek status
+        console.log("[BROWSER] Tunggu halaman stabil...");
         await sleep(4000);
 
         // screenshot setelah redirect
@@ -82,17 +85,17 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(process.env.ADMIN_ID, imgAfter, "🟢 Setelah redirect dashboard");
         }
 
-        // ✅ CEK TOMBOL "Get Number"
+        // ✅ CEK tombol Get Number
         const isSuccess = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll("button"));
             return btns.some(btn => btn.innerText.includes("Get Number"));
         });
 
         if (isSuccess) {
-            console.log("[LOGIN] ✅ BERHASIL (Get Number ditemukan)");
+            console.log("[LOGIN] ✅ BERHASIL");
             return true;
         } else {
-            console.log("[LOGIN] ❌ GAGAL (Get Number tidak ditemukan)");
+            console.log("[LOGIN] ❌ GAGAL");
             return false;
         }
 
