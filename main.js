@@ -1,14 +1,12 @@
 require('dotenv').config();
-const readline = require('readline');
 const cron = require('node-cron');
 const db = require('./helpers/database');
 const tg = require('./helpers/telegram');
 const scraper = require('./helpers/scraper');
-const state = require('./helpers/state'); // Ambil state pusat
+const state = require('./helpers/state'); 
 const commands = require('./handlers/commands');
 const callbacks = require('./handlers/callbacks');
 
-// Alias lock untuk kompatibilitas dengan cron job di bawah
 const playwrightLock = state.browserLock;
 
 console.log("[DEBUG] STEX_EMAIL dari ENV:", process.env.STEX_EMAIL ? "TERISI" : "KOSONG!");
@@ -57,7 +55,6 @@ async function telegramLoop() {
                         const chatId = upd.message.from.id;
                         console.log(`[TELEGRAM] Update dari ${chatId}: ${upd.message.text || '[no text]'}`);
                         
-                        // FIX: Pastikan state.users terinisialisasi sebelum diproses handler
                         if (!state.users) state.users = {};
                         if (!state.users[chatId]) state.users[chatId] = { waitingAdminInput: false };
 
@@ -82,8 +79,6 @@ async function main() {
     console.log("[INFO] Menjalankan NodeJS Bot Modular...");
     db.initializeFiles();
 
-    // sms.js tetap jalan (tidak buka tab)
-    // Pastikan sms.js juga menggunakan require('./helpers/state') tanpa { }
     try {
         require('./sms.js');
     } catch (e) {
@@ -91,38 +86,25 @@ async function main() {
     }
 
     console.log("[INFO] Login browser dimulai...");
-    await scraper.initBrowser(); // login.js handle semua status & screenshot
+    await scraper.initBrowser(); 
 
     console.log("=================================");
-    console.log("ketik y untuk menjalankan range.js & message.js");
-    process.stdout.write("> ");
+    console.log("🚀 Menjalankan sistem otomatis...");
+    
+    // Langsung muat file pendukung
+    try {
+        require('./range.js');
+        require('./message.js');
+    } catch (e) {
+        console.error("[ERROR] Gagal memuat range/message.js:", e.message);
+    }
 
-    // ================== PROMPT TERMINAL ==================
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
-    rl.on('line', async (input) => {
-        if (input.trim().toLowerCase() === 'y') {
-            console.log("🚀 Menjalankan range.js & message.js...");
-            
-            // Panggil file range dan message
-            require('./range.js');
-            require('./message.js');
-
-            // Jalankan telegram loop + expiry monitor bersamaan
-            // Tidak menggunakan await Promise.all agar loop tidak memblokir rl
-            telegramLoop();
-            expiryMonitorTask();
-            
-            console.log("✅ Semua sistem berjalan.");
-            rl.close();
-        } else {
-            console.log("ketik y untuk lanjut...");
-            process.stdout.write("> ");
-        }
-    });
+    // Jalankan loop telegram dan monitor secara paralel
+    telegramLoop();
+    expiryMonitorTask();
+    
+    console.log("✅ Semua sistem sudah berjalan otomatis.");
+    console.log("=================================");
 
     // ================== CRON RESTART BROWSER ==================
     cron.schedule('0 7 * * *', async () => {
