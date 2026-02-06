@@ -25,7 +25,7 @@ function getProgressMessage(currentStep, totalSteps, prefixRange, numCount) {
 
     let status = config.STATUS_MAP ? config.STATUS_MAP[currentStep] : "Processing...";
     if (!status) {
-        if (currentStep < 3) status = "Memulai Sesi...";
+        if (currentStep < 3) status = "Memasukkan Range...";
         else if (currentStep < 8) status = "Mengambil Nomor...";
         else status = "Menyelesaikan...";
     }
@@ -52,20 +52,12 @@ async function initBrowser() {
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--no-zygote',
-                '--single-process',
-                '--disable-extensions'
+                '--single-process'
             ]
         });
 
         const pages = await state.browser.pages();
         state.sharedPage = pages.length > 0 ? pages[0] : await state.browser.newPage();
-
-        // Optimasi: Blokir gambar agar cepat
-        await state.sharedPage.setRequestInterception(true);
-        state.sharedPage.on('request', (req) => {
-            if (['image', 'media', 'font'].includes(req.resourceType())) req.abort();
-            else req.continue();
-        });
 
         console.log("[BROWSER] Mencoba Login...");
         const loginSuccess = await performLogin(state.sharedPage, config.STEX_EMAIL, config.STEX_PASSWORD, config.LOGIN_URL);
@@ -73,7 +65,6 @@ async function initBrowser() {
         if (!loginSuccess) throw new Error("Gagal Login ke Website.");
 
         await state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
-        console.log("[BROWSER] Siap di Target URL.");
         return true;
     } catch (e) {
         console.error(`[BROWSER ERROR] ${e.message}`);
@@ -98,11 +89,8 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
         }, rowSelector);
 
         if (!data || !data.numberRaw) return null;
-        
         const number = normalizeNumber(data.numberRaw);
         if (db.isInCache(number)) return null;
-        
-        // Skip nomor yang sudah expired/used
         if (["success", "failed", "expired", "used"].some(s => data.statusText.includes(s))) return null;
 
         return { number, country: data.countryRaw };
@@ -117,7 +105,6 @@ async function getAllNumbersParallel(page, numToFetch) {
         tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page));
     }
     const results = await Promise.all(tasks);
-    
     const currentNumbers = [];
     const seen = new Set();
     for (const res of results) {
@@ -129,26 +116,16 @@ async function getAllNumbersParallel(page, numToFetch) {
     return currentNumbers;
 }
 
-// ================== MAIN LOGIC ==================
+// ================== MAIN ACTION LOGIC ==================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     let msgId = messageIdToEdit || (state.pendingMessage ? state.pendingMessage[userId] : null);
     let actionInterval = null;
     const numToFetch = parseInt(clickCount) || 1;
 
-    // 1. Validasi awal
-    if (!prefix) return tg.tgSend(userId, "❌ Error: Prefix kosong.");
-
-    // 2. Antrian Lock
-    const isLocked = state.browserLock.isLocked();
-    if (isLocked) {
-        const waitMsg = `⏳ <b>Antrean Aktif</b>\nMohon tunggu, bot sedang melayani user lain...\n\n` + getProgressMessage(0, 0, prefix, numToFetch);
-        if (!msgId) msgId = await tg.tgSend(userId, waitMsg);
-        else await tg.tgEdit(userId, msgId, waitMsg);
-    }
-
+    // Antrian Lock
     const release = await state.browserLock.acquire();
-    console.log(`[JOB] User ${userId} mulai | Range: ${prefix}`);
+    console.log(`[JOB] User ${userId} | Range: ${prefix}`);
 
     try {
         actionInterval = setInterval(() => tg.tgSendAction(userId, "typing").catch(() => {}), 4500);
@@ -156,56 +133,54 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         if (!msgId) msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        // 3. Pastikan Browser Siap
         if (!state.browser || !state.sharedPage || state.sharedPage.isClosed()) {
              await initBrowser();
         }
 
         const page = state.sharedPage;
-        
-        // Pastikan di URL yang benar
-        if (!page.url().includes('get')) { 
-            await page.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
-        }
+        const INPUT_SEL = "input[name='numberrange']";
+        const BTN_SEL = "button[type='submit']";
 
-        const INPUT_SELECTOR = "input[name='numberrange']";
+        // 1. Masukkan Range via DOM (Lebih kuat dari page.type)
+        await page.waitForSelector(INPUT_SEL, { visible: true, timeout: 15000 });
         
-        // Tunggu input muncul
-        await page.waitForSelector(INPUT_SELECTOR, { visible: true, timeout: 15000 });
-        
-        // Isi Range
-        await page.click(INPUT_SELECTOR, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.type(INPUT_SELECTOR, prefix);
-        
+        await page.evaluate((sel, val) => {
+            const input = document.querySelector(sel);
+            input.value = val;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }, INPUT_SEL, prefix);
+
+        console.log(`[DEBUG] Input terisi: ${prefix}`);
         currentStep = 3;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        // 4. Cari & Klik Tombol Get Number
-        const getNumBtn = await page.evaluateHandle(() => {
-            return Array.from(document.querySelectorAll('button')).find(el => el.innerText.includes('Get Number'));
-        });
+        // 2. Klik Tombol "Get Number" via DOM
+        const clickSuccess = await page.evaluate((sel, count) => {
+            const btn = document.querySelector(sel);
+            if (btn && btn.innerText.includes('Get Number')) {
+                for (let i = 0; i < count; i++) {
+                    btn.click();
+                }
+                return true;
+            }
+            return false;
+        }, BTN_SEL, numToFetch);
 
-        if (!getNumBtn || !getNumBtn.asElement()) {
-            throw new Error("Tombol 'Get Number' tidak ditemukan di halaman.");
+        if (!clickSuccess) {
+            console.log("[DEBUG] Click DOM gagal, mencoba click standar...");
+            await page.click(BTN_SEL);
         }
 
-        for (let i = 0; i < numToFetch; i++) {
-            await getNumBtn.asElement().click();
-            await new Promise(r => setTimeout(r, 400));
-        }
-
-        // 5. Scan Hasil
+        // 3. Scan Hasil
         let foundNumbers = [];
-        const maxWait = 25; // detik
+        const maxWait = 25; 
         const startTime = Date.now() / 1000;
 
         while ((Date.now() / 1000 - startTime) < maxWait) {
             foundNumbers = await getAllNumbersParallel(page, numToFetch);
-            
             if (foundNumbers.length >= numToFetch) break;
 
-            // Animasi progress naik pelan
             if (currentStep < 11) {
                 currentStep++;
                 await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
@@ -214,11 +189,13 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         if (foundNumbers.length === 0) {
-            await tg.tgEdit(userId, msgId, `❌ <b>Gagal!</b>\nTidak ada nomor ditemukan untuk range <code>${prefix}</code>. Coba ganti range.`);
+            // Screenshot untuk debug jika gagal
+            await page.screenshot({ path: `empty_${userId}.png` });
+            await tg.tgEdit(userId, msgId, `❌ <b>Nomor Tidak Ditemukan.</b>\nRange <code>${prefix}</code> kosong atau sistem lambat.`);
             return;
         }
 
-        // 6. Selesai & Kirim
+        // 4. Sukses & Kirim
         currentStep = 12;
         await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
@@ -234,26 +211,18 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         msg += `\n${emoji} <b>Country:</b> ${mainCountry}\n🎯 <b>Range:</b> <code>${prefix}</code>`;
 
         const inlineKb = {
-            inline_keyboard: [
-                [{ text: "🔄 Ganti 1 Nomor", callback_data: `change_num:1:${prefix}` }],
-                [{ text: "🌐 Menu Utama", callback_data: "getnum" }]
-            ]
+            inline_keyboard: [[{ text: "🌐 Menu Utama", callback_data: "getnum" }]]
         };
 
         await tg.tgEdit(userId, msgId, msg, inlineKb);
-        console.log(`[SUCCESS] User ${userId} berhasil dapat nomor.`);
 
     } catch (e) {
         console.error(`[ERROR] ${e.message}`);
-        // Kirim screenshot ke admin jika error
-        if (state.sharedPage) {
-            const errPath = `error_${userId}.png`;
-            await state.sharedPage.screenshot({ path: errPath });
-        }
-        if (msgId) await tg.tgEdit(userId, msgId, `❌ <b>Terjadi Kesalahan:</b>\n<code>${e.message}</code>`);
+        if (state.sharedPage) await state.sharedPage.screenshot({ path: `error_${userId}.png` });
+        if (msgId) await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> <code>${e.message}</code>`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
-        release(); // Penting: Lepas antrean agar user lain bisa masuk
+        release();
     }
 }
 
