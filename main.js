@@ -1,11 +1,10 @@
 require('dotenv').config();
 const readline = require('readline');
 const cron = require('node-cron');
-const config = require('./config');
 const db = require('./helpers/database');
 const tg = require('./helpers/telegram');
 const scraper = require('./helpers/scraper');
-const { state: scraperState, playwrightLock } = scraper; // ✅ export state dari scraper
+const { playwrightLock } = scraper;
 const commands = require('./handlers/commands');
 const callbacks = require('./handlers/callbacks');
 
@@ -41,7 +40,6 @@ async function expiryMonitorTask() {
 
 // ================== TELEGRAM LOOP ==================
 async function telegramLoop() {
-    state.verifiedUsers = db.loadUsers();
     let offset = 0;
     try { await tg.tgGetUpdates(-1); } catch (e) {}
     console.log("[TELEGRAM] Polling dimulai...");
@@ -73,23 +71,9 @@ async function main() {
     require('./sms.js');
 
     console.log("[INFO] Login browser dimulai...");
-    const loginResult = await scraper.initBrowser();
-
-    // kirim status login ke admin + screenshot
-    const statusText = loginResult.success ? "✅ LOGIN SUKSES" : "❌ LOGIN GAGAL";
-
-    await tg.tgSend(process.env.ADMIN_ID, `🔐 Status Login Bot:\n${statusText}`).catch(()=>{});
-
-    if (loginResult.screenshot) {
-        await tg.tgSendPhoto(
-            process.env.ADMIN_ID,
-            loginResult.screenshot,
-            "📸 Screenshot halaman setelah login"
-        ).catch(()=>{});
-    }
+    await scraper.initBrowser(); // login.js handle semua status & screenshot
 
     console.log("=================================");
-    console.log("STATUS LOGIN:", loginResult.success ? "SUKSES" : "GAGAL");
     console.log("ketik y untuk menjalankan range.js & message.js");
     console.log("> ");
 
