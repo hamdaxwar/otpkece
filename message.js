@@ -1,7 +1,8 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { state } = require('./helpers/state');
+// PERBAIKAN: Import state tanpa kurung kurawal sesuai struktur state.js baru
+const state = require('./helpers/state');
 
 // ================= KONFIGURASI =================
 const BOT_TOKEN = "7562117237:AAFQnb5aCmeSHHi_qAJz3vkoX4HbNGohe38";
@@ -162,7 +163,8 @@ async function startSmsMonitor() {
     console.log("🚀 [MESSAGE] Monitoring SMS otomatis dimulai...");
 
     const checkState = setInterval(() => {
-        if (state.browser) {
+        // PERBAIKAN: state.browser sekarang terdefinisi karena cara import sudah benar
+        if (state && state.browser) {
             clearInterval(checkState);
             console.log("✅ [MESSAGE] Browser siap. Menempel ke dashboard dalam 5 detik...");
             setTimeout(() => runLoop(), 5000);
@@ -173,6 +175,7 @@ async function startSmsMonitor() {
         while (true) {
             try {
                 if (!monitorPage || monitorPage.isClosed()) {
+                    // Gunakan browser dari state yang sudah diinisialisasi di main/scraper
                     monitorPage = await state.browser.newPage();
                     await monitorPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
                     console.log("✅ [MESSAGE] Tab SMS aktif.");
@@ -182,7 +185,7 @@ async function startSmsMonitor() {
                     await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'networkidle2' }).catch(() => {});
                 }
 
-                // Gunakan cara Puppeteer untuk menangkap response API
+                // Gunakan Puppeteer untuk menangkap response API
                 const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 8000 }).catch(() => null);
                 
                 // Klik tombol refresh info di dashboard
