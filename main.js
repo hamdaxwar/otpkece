@@ -5,19 +5,20 @@ const config = require('./config');
 const db = require('./helpers/database');
 const tg = require('./helpers/telegram');
 const scraper = require('./helpers/scraper');
-const { state, playwrightLock } = require('./helpers/state');
+const { state: scraperState, playwrightLock } = scraper; // ✅ export state dari scraper
 const commands = require('./handlers/commands');
 const callbacks = require('./handlers/callbacks');
 
 console.log("[DEBUG] STEX_EMAIL dari ENV:", process.env.STEX_EMAIL ? "TERISI" : "KOSONG!");
 
-// ================= EXPIRY MONITOR =================
+// ================== MONITOR EXPIRY ==================
 async function expiryMonitorTask() {
     setInterval(async () => {
         try {
             const waitList = db.loadWaitList();
             const now = Date.now() / 1000;
             const updatedList = [];
+
             for (const item of waitList) {
                 if (item.otp_received_time) {
                     updatedList.push(item);
@@ -30,19 +31,21 @@ async function expiryMonitorTask() {
                     updatedList.push(item);
                 }
             }
+
             db.saveWaitList(updatedList);
         } catch (e) {
-            console.error("[EXPIRY MONITOR ERROR]", e);
+            console.error("[EXPIRY MONITOR ERROR]", e.message);
         }
     }, 15000);
 }
 
-// ================= TELEGRAM POLLING =================
+// ================== TELEGRAM LOOP ==================
 async function telegramLoop() {
     state.verifiedUsers = db.loadUsers();
     let offset = 0;
     try { await tg.tgGetUpdates(-1); } catch (e) {}
     console.log("[TELEGRAM] Polling dimulai...");
+
     while (true) {
         try {
             const data = await tg.tgGetUpdates(offset);
@@ -54,14 +57,14 @@ async function telegramLoop() {
                 }
             }
         } catch (e) {
-            console.error("[TELEGRAM POLLING ERROR]", e);
+            console.error("[TELEGRAM POLLING ERROR]", e.message);
             await new Promise(r => setTimeout(r, 5000));
         }
         await new Promise(r => setTimeout(r, 1000));
     }
 }
 
-// ================= MAIN =================
+// ================== MAIN ==================
 async function main() {
     console.log("[INFO] Menjalankan NodeJS Bot Modular...");
     db.initializeFiles();
@@ -72,36 +75,25 @@ async function main() {
     console.log("[INFO] Login browser dimulai...");
     const loginResult = await scraper.initBrowser();
 
-    // tunggu 4 detik lalu paksa redirect ke dashboard
-    await new Promise(r => setTimeout(r, 4000));
-    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
-        await scraper.state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    }
+    // kirim status login ke admin + screenshot
+    const statusText = loginResult.success ? "✅ LOGIN SUKSES" : "❌ LOGIN GAGAL";
 
-    // screenshot final halaman dashboard
-    const finalSS = "login_final.png";
-    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
-        await scraper.state.sharedPage.screenshot({ path: finalSS });
-    }
-
-    // cek tombol "Get Number" untuk login sukses
-    let btnExist = false;
-    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
-        btnExist = await scraper.state.sharedPage.$("button[type='submit']") !== null;
-    }
-
-    const statusText = (loginResult.success && btnExist) ? "✅ LOGIN SUKSES" : "❌ LOGIN GAGAL";
-
-    // kirim status + screenshot ke admin
     await tg.tgSend(process.env.ADMIN_ID, `🔐 Status Login Bot:\n${statusText}`).catch(()=>{});
-    await tg.tgSendPhoto(process.env.ADMIN_ID, finalSS, "📸 Screenshot halaman dashboard").catch(()=>{});
+
+    if (loginResult.screenshot) {
+        await tg.tgSendPhoto(
+            process.env.ADMIN_ID,
+            loginResult.screenshot,
+            "📸 Screenshot halaman setelah login"
+        ).catch(()=>{});
+    }
 
     console.log("=================================");
-    console.log("STATUS LOGIN:", statusText);
+    console.log("STATUS LOGIN:", loginResult.success ? "SUKSES" : "GAGAL");
     console.log("ketik y untuk menjalankan range.js & message.js");
     console.log("> ");
 
-    // prompt terminal
+    // ================== PROMPT TERMINAL ==================
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -113,6 +105,7 @@ async function main() {
             require('./range.js');
             require('./message.js');
 
+            // jalankan telegram loop + expiry monitor bersamaan
             await Promise.all([telegramLoop(), expiryMonitorTask()]);
             rl.close();
         } else {
@@ -121,10 +114,14 @@ async function main() {
         }
     });
 
-    // jadwal login otomatis tiap jam 7 pagi
+    // ================== CRON RESTART BROWSER ==================
     cron.schedule('0 7 * * *', async () => {
         const release = await playwrightLock.acquire();
-        try { await scraper.initBrowser(); } finally { release(); }
+        try {
+            await scraper.initBrowser();
+        } finally {
+            release();
+        }
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 }
 
