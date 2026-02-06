@@ -7,7 +7,7 @@ function sleep(ms) {
 
 // human typing
 async function humanType(page, selector, text) {
-    await page.waitForSelector(selector, { timeout: 30000 }); // 🔥 penting
+    await page.waitForSelector(selector, { timeout: 30000 });
     await page.focus(selector);
 
     for (const char of text) {
@@ -29,9 +29,9 @@ async function performLogin(page, email, password, loginUrl) {
         });
 
         console.log("[BROWSER] Menunggu page stabil...");
-        await sleep(5000);
+        await sleep(4000);
 
-        // 🔥 selector diperluas (biar nggak gagal)
+        // selector fleksibel
         const emailSelector = `
             input[type='email'],
             input[name='email'],
@@ -39,12 +39,6 @@ async function performLogin(page, email, password, loginUrl) {
             input[type='text']
         `;
         const passSelector  = "input[type='password']";
-        const btnSelector   = `
-            button[type='submit'],
-            input[type='submit'],
-            button.login,
-            button
-        `;
 
         console.log("[BROWSER] Mencari input email...");
         await page.waitForSelector(emailSelector, { timeout: 30000 });
@@ -56,8 +50,10 @@ async function performLogin(page, email, password, loginUrl) {
         console.log("[BROWSER] Human typing email...");
         await humanType(page, emailSelector, email);
 
+        await sleep(500);
+
         console.log("[BROWSER] Mencari input password...");
-        await page.waitForSelector(passSelector, { timeout: 30000 }); // 🔥 FIX BESAR
+        await page.waitForSelector(passSelector, { timeout: 30000 });
 
         // bersihkan password
         await page.click(passSelector, { clickCount: 3 });
@@ -74,21 +70,23 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
                 imgBefore,
-                "🟡 Sebelum klik login"
+                "🟡 Sebelum tekan ENTER (login)"
             ).catch(()=>{});
         }
 
-        await sleep(700 + Math.random() * 1300);
+        await sleep(800 + Math.random() * 1200);
 
-        console.log("[BROWSER] Klik tombol login...");
-        await page.click(btnSelector);
+        // 🔥 LOGIN VIA ENTER (bukan klik tombol)
+        console.log("[BROWSER] Tekan ENTER untuk login...");
+        await page.keyboard.press("Enter");
 
+        // tunggu redirect / perubahan halaman
         await Promise.race([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(()=>{}),
-            sleep(4000)
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{}),
+            sleep(5000)
         ]);
 
-        await sleep(3000);
+        await sleep(2000);
 
         // screenshot setelah login
         const imgAfter = "login_after.png";
@@ -98,20 +96,25 @@ async function performLogin(page, email, password, loginUrl) {
             await tg.tgSendPhoto(
                 process.env.ADMIN_ID,
                 imgAfter,
-                "🟢 Setelah klik login"
+                "🟢 Setelah login (ENTER)"
             ).catch(()=>{});
         }
 
         const currentUrl = page.url();
         console.log("[DEBUG URL]", currentUrl);
 
-        if (currentUrl.includes('login') || currentUrl.includes('signin')) {
-            console.log("[BROWSER] Login gagal (masih di halaman login).");
-            return false;
+        // deteksi login sukses
+        if (
+            currentUrl.includes("dashboard") ||
+            currentUrl.includes("getnum") ||
+            !currentUrl.includes("login")
+        ) {
+            console.log("[BROWSER] ✅ Login berhasil.");
+            return true;
         }
 
-        console.log("[BROWSER] Login berhasil.");
-        return true;
+        console.log("[BROWSER] ❌ Login gagal (masih di halaman login).");
+        return false;
 
     } catch (err) {
         console.error("[LOGIN ERROR]", err.message);
