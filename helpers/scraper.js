@@ -5,7 +5,7 @@ const { state } = require('./state');
 const db = require('./database');
 const tg = require('./telegram');
 
-// --- Helper Functions ---
+// ================== HELPER ==================
 
 function normalizeNumber(number) {
     let norm = String(number).trim().replace(/[\s-]/g, "");
@@ -26,20 +26,20 @@ function getProgressMessage(currentStep, totalSteps, prefixRange, numCount) {
     return `<code>${status}</code>\n<blockquote>Range: <code>${prefixRange}</code> | Jumlah: <code>${numCount}</code></blockquote>\n<code>Load:</code> [${bar}]`;
 }
 
-// --- Browser Control (PURE PUPPETEER) ---
+// ================== BROWSER ==================
 
 async function initBrowser() {
     try {
         if (state.browser) {
             try { await state.browser.close(); } catch(e){}
         }
-        
+
         console.log("[BROWSER] Launching Chromium (Termux Mode)...");
 
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
             headless: true,
-            protocolTimeout: 120000, // 🔥 penting untuk Termux
+            protocolTimeout: 120000,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -50,9 +50,45 @@ async function initBrowser() {
             ]
         });
 
+        // 🔥 PAGE KHUSUS LOGIN (BIAR TIDAK DIREBUT MODUL LAIN)
+        const loginPage = await state.browser.newPage();
+
+        await loginPage.setRequestInterception(true);
+        loginPage.on('request', req => {
+            const type = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        await loginPage.setUserAgent(
+            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36'
+        );
+
+        console.log("[BROWSER] Menjalankan login...");
+
+        const loginSuccess = await performLogin(
+            loginPage,
+            config.STEX_EMAIL,
+            config.STEX_PASSWORD,
+            config.LOGIN_URL
+        );
+
+        // screenshot status login
+        await loginPage.screenshot({ path: 'login_status.png' });
+
+        if (!loginSuccess) {
+            console.error("[BROWSER ERROR] Login gagal.");
+            return { success: false, screenshot: 'login_status.png' };
+        }
+
+        console.log("[BROWSER] Login sukses.");
+
+        // 🔥 PAGE KHUSUS SCRAPER (bukan loginPage)
         state.sharedPage = await state.browser.newPage();
 
-        // 🔥 bikin puppeteer ringan (block resource berat)
         await state.sharedPage.setRequestInterception(true);
         state.sharedPage.on('request', req => {
             const type = req.resourceType();
@@ -63,31 +99,19 @@ async function initBrowser() {
             }
         });
 
-        // User-Agent mobile
         await state.sharedPage.setUserAgent(
-            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36'
         );
 
-        console.log("[BROWSER] Menjalankan login...");
-
-        const loginSuccess = await performLogin(
-            state.sharedPage, 
-            config.STEX_EMAIL, 
-            config.STEX_PASSWORD, 
-            config.LOGIN_URL 
-        );
-
-        if (loginSuccess) {
-            console.log("[BROWSER] Browser siap.");
-        } else {
-            console.error("[BROWSER ERROR] Login gagal.");
-            await state.sharedPage.screenshot({ path: 'login_failed_final.png' });
-        }
+        return { success: true, screenshot: 'login_status.png' };
 
     } catch (e) {
         console.error("[BROWSER FATAL]", e.message);
+        return { success: false, screenshot: null };
     }
 }
+
+// ================== SCRAPING ==================
 
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
@@ -117,7 +141,7 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
         if (number.length > 5) return { number: normalizeNumber(number), country: data.country };
         return null;
 
-    } catch (e) {
+    } catch {
         return null;
     }
 }
@@ -141,7 +165,7 @@ async function getAllNumbersParallel(page, numToFetch) {
     return currentNumbers;
 }
 
-// --- Main Logic ---
+// ================== MAIN PROCESS ==================
 
 async function actionTask(userId) {
     return setInterval(() => {
