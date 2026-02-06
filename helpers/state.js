@@ -6,6 +6,7 @@ const state = {
     sharedPage: null,
     pendingMessage: {},
     lastUsedRange: {},
+    users: {}, // TAMBAHKAN INI: Untuk fix error waitingAdminInput
     
     // Management Antrian (Locking)
     browserLock: {
@@ -14,8 +15,6 @@ const state = {
             const promise = new Promise(resolve => {
                 releaseFunc = resolve;
             });
-            
-            // Mengunci akses ke browser berdasarkan key 'puppeteer'
             await lock.acquire('puppeteer', () => promise);
             return releaseFunc;
         },
@@ -24,4 +23,3 @@ const state = {
 };
 
 module.exports = state;
-        
