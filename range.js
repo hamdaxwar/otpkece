@@ -1,7 +1,8 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { state } = require('./helpers/state'); 
+// PERBAIKAN: Import state tanpa kurung kurawal agar sesuai dengan module.exports = state
+const state = require('./helpers/state'); 
 
 // ==================== KONFIGURASI ====================
 const CONFIG = {
@@ -19,6 +20,7 @@ let CACHE_SET = new Set();
 let MESSAGE_QUEUE = []; 
 let IS_PROCESSING_QUEUE = false; 
 
+// Gunakan try-catch untuk file json agar tidak crash jika file tidak ada
 const COUNTRY_EMOJI = require('./country.json');
 const INLINE_JSON_PATH = path.join(__dirname, 'inline.json');
 
@@ -127,7 +129,8 @@ async function startMonitor() {
     console.log("🚀 [RANGE] Menunggu browser aktif...");
 
     const checkState = setInterval(() => {
-        if (state.browser) {
+        // PERBAIKAN: Cek state dan state.browser tanpa destructuring
+        if (state && state.browser) {
             clearInterval(checkState);
             setTimeout(() => { runMonitoringLoop(); }, CONFIG.ATTACH_DELAY);
         }
@@ -137,67 +140,70 @@ async function startMonitor() {
         let monitorPage = null;
         while (true) {
             try {
-                if (!monitorPage || monitorPage.isClosed()) {
-                    // Di Puppeteer, kita langsung buat page baru dari browser state
-                    monitorPage = await state.browser.newPage();
-                    await monitorPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-                }
+                // Pastikan state.browser masih ada sebelum membuat page
+                if (state.browser) {
+                    if (!monitorPage || monitorPage.isClosed()) {
+                        monitorPage = await state.browser.newPage();
+                        await monitorPage.setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+                    }
 
-                if (!monitorPage.url().includes('/console')) {
-                    await monitorPage.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'networkidle2' }).catch(() => {});
-                }
+                    if (!monitorPage.url().includes('/console')) {
+                        await monitorPage.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'networkidle2' }).catch(() => {});
+                    }
 
-                const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
-                await monitorPage.waitForSelector(CONSOLE_SELECTOR, { timeout: 5000 }).catch(() => {});
+                    const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
+                    await monitorPage.waitForSelector(CONSOLE_SELECTOR, { timeout: 5000 }).catch(() => {});
 
-                // Ambil data menggunakan evaluate agar jauh lebih cepat di Termux
-                const entries = await monitorPage.evaluate((sel) => {
-                    const elements = document.querySelectorAll(sel);
-                    return Array.from(elements).map(el => {
-                        const rawC = el.querySelector(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono")?.innerText || "";
-                        const sRaw = el.querySelector(".flex-grow.min-w-0 .text-xs.font-bold.text-blue-400")?.innerText || "";
-                        const phoneRaw = el.querySelector(".flex-grow.min-w-0 .text-\\[10px\\].font-mono:last-of-type")?.innerText || "";
-                        const msgRaw = el.querySelector(".flex-grow.min-w-0 p")?.innerText || "";
-                        
-                        return { rawC, sRaw, phoneRaw, msgRaw };
-                    });
-                }, CONSOLE_SELECTOR);
-
-                for (const entry of entries) {
-                    try {
-                        const country = entry.rawC.includes("•") ? entry.rawC.split("•")[1].trim() : "Unknown";
-                        if (CONFIG.BANNED_COUNTRIES.includes(country.toLowerCase())) continue;
-
-                        const service = cleanServiceName(entry.sRaw);
-                        if (!CONFIG.ALLOWED_SERVICES.some(s => service.toLowerCase().includes(s))) continue;
-
-                        const phone = cleanPhoneNumber(entry.phoneRaw);
-                        const fullMessage = entry.msgRaw.replace('➜', '').trim();
-
-                        const cacheKey = `${phone}_${fullMessage.length}`;
-
-                        if (phone.includes('XXX') && !CACHE_SET.has(cacheKey)) {
-                            CACHE_SET.add(cacheKey);
-                            const currentData = SENT_MESSAGES.get(phone) || { count: 0 };
-                            const newCount = currentData.count + 1;
+                    const entries = await monitorPage.evaluate((sel) => {
+                        const elements = document.querySelectorAll(sel);
+                        return Array.from(elements).map(el => {
+                            const rawC = el.querySelector(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono")?.innerText || "";
+                            const sRaw = el.querySelector(".flex-grow.min-w-0 .text-xs.font-bold.text-blue-400")?.innerText || "";
+                            const phoneRaw = el.querySelector(".flex-grow.min-w-0 .text-\\[10px\\].font-mono:last-of-type")?.innerText || "";
+                            const msgRaw = el.querySelector(".flex-grow.min-w-0 p")?.innerText || "";
                             
-                            MESSAGE_QUEUE.push({
-                                rangeVal: phone,
-                                country,
-                                service,
-                                count: newCount,
-                                text: formatLiveMessage(phone, newCount, country, service, fullMessage)
-                            });
-                            processQueue(); 
-                        }
-                    } catch (e) { continue; }
+                            return { rawC, sRaw, phoneRaw, msgRaw };
+                        });
+                    }, CONSOLE_SELECTOR);
+
+                    for (const entry of entries) {
+                        try {
+                            const country = entry.rawC.includes("•") ? entry.rawC.split("•")[1].trim() : "Unknown";
+                            if (CONFIG.BANNED_COUNTRIES.includes(country.toLowerCase())) continue;
+
+                            const service = cleanServiceName(entry.sRaw);
+                            if (!CONFIG.ALLOWED_SERVICES.some(s => service.toLowerCase().includes(s))) continue;
+
+                            const phone = cleanPhoneNumber(entry.phoneRaw);
+                            const fullMessage = entry.msgRaw.replace('➜', '').trim();
+
+                            const cacheKey = `${phone}_${fullMessage.length}`;
+
+                            if (phone.includes('XXX') && !CACHE_SET.has(cacheKey)) {
+                                CACHE_SET.add(cacheKey);
+                                const currentData = SENT_MESSAGES.get(phone) || { count: 0 };
+                                const newCount = currentData.count + 1;
+                                
+                                MESSAGE_QUEUE.push({
+                                    rangeVal: phone,
+                                    country,
+                                    service,
+                                    count: newCount,
+                                    text: formatLiveMessage(phone, newCount, country, service, fullMessage)
+                                });
+                                processQueue(); 
+                            }
+                        } catch (e) { continue; }
+                    }
                 }
 
                 const now = Date.now();
                 for (let [range, val] of SENT_MESSAGES.entries()) {
                     if (now - val.timestamp > 600000) SENT_MESSAGES.delete(range);
                 }
-            } catch (e) { console.error(`❌ [RANGE] Loop Error: ${e.message}`); }
+            } catch (e) { 
+                console.error(`❌ [RANGE] Loop Error: ${e.message}`); 
+            }
             await new Promise(r => setTimeout(r, 10000));
         }
     }
