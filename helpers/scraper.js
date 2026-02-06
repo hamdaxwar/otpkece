@@ -7,23 +7,30 @@ const tg = require('./telegram');
 const fs = require('fs');
 const { exec } = require('child_process');
 
-// ================== RESET SYSTEM (ANTI-STUCK) ==================
+// ================== DEBUGGING TOOL ==================
 
-/**
- * Membunuh semua proses Chromium yang masih nyangkut di Termux
- * dan memaksa pelepasan lock antrean.
- */
+async function sendDebugScreenshot(userId, caption = "📸 Live Debug View") {
+    try {
+        if (state.sharedPage) {
+            const path = `./debug_${userId}.png`;
+            await state.sharedPage.screenshot({ path, fullPage: true });
+            await tg.tgSendPhoto(userId, path, caption);
+            if (fs.existsSync(path)) fs.unlinkSync(path); // Hapus setelah kirim
+        } else {
+            await tg.tgSend(userId, "❌ Browser sedang tidak aktif.");
+        }
+    } catch (e) {
+        console.error("Gagal ambil screenshot:", e.message);
+    }
+}
+
+// ================== RESET & CLEANING ==================
+
 async function hardResetBot() {
-    console.log("[SYSTEM] Melakukan pembersihan total...");
+    console.log("[SYSTEM] Cleaning zombie processes...");
     return new Promise((resolve) => {
-        // Bunuh semua proses chromium
-        exec('pkill -f chromium', (err) => {
-            // Paksa lepas lock di state jika ada
-            if (state.browserLock && state.browserLock.isLocked()) {
-                console.log("[SYSTEM] Memaksa pelepasan lock antrean...");
-                // Jika library lock kamu punya method manual release, panggil di sini
-                // Atau kita asumsikan dengan restart proses state akan fresh
-            }
+        exec('pkill -f chromium', () => {
+            console.log("[SYSTEM] Reset Berhasil.");
             resolve();
         });
     });
@@ -44,126 +51,126 @@ function getProgressMessage(currentStep, prefixRange, numCount) {
     const bar = "█".repeat(filledCount) + "░".repeat(maxLen - filledCount);
     
     let status = "Processing...";
-    if (currentStep <= 2) status = "🔄 Reset Sesi...";
-    else if (currentStep <= 5) status = "✍️ Mengisi Range...";
+    if (currentStep <= 2) status = "🔄 Memulai Browser...";
+    else if (currentStep <= 5) status = "✍️ Mengisi Data...";
     else if (currentStep <= 10) status = "📡 Menarik Nomor...";
     else status = "✅ Selesai!";
 
-    return `<b>${status}</b>\n<blockquote>Range: <code>${prefixRange}</code> | Qty: <code>${numCount}</code></blockquote>\n<code>[${bar}]</code>`;
+    return `<b>${status}</b>\n<blockquote>Range: <code>${prefixRange}</code>\nQty: <code>${numCount}</code></blockquote>\n<code>[${bar}]</code>`;
 }
 
-// ================== BROWSER CONTROL ==================
+// ================== BROWSER CORE ==================
 
-async function initBrowser() {
+async function initBrowser(userId) {
     try {
-        await hardResetBot(); // Bersihkan zombie process sebelum mulai
-
-        console.log("[BROWSER] Membuka Chromium Baru...");
+        await hardResetBot();
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
         });
 
         const pages = await state.browser.pages();
         state.sharedPage = pages.length > 0 ? pages[0] : await state.browser.newPage();
 
-        console.log("[BROWSER] Login ulang...");
+        console.log("[BROWSER] Login process...");
         const loginSuccess = await performLogin(state.sharedPage, config.STEX_EMAIL, config.STEX_PASSWORD, config.LOGIN_URL);
         
-        if (!loginSuccess) throw new Error("Gagal Login.");
+        if (!loginSuccess) {
+            await sendDebugScreenshot(userId, "❌ Gagal Login - Lihat Gambar");
+            throw new Error("Gagal Login ke Website.");
+        }
 
         await state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'networkidle2' });
         return true;
     } catch (e) {
-        console.error(`[BROWSER ERROR] ${e.message}`);
+        console.error(`[INIT ERROR] ${e.message}`);
         return false;
     }
 }
 
-async function getNumberAndCountryFromRow(rowSelector, page) {
-    try {
-        return await page.evaluate(sel => {
-            const el = document.querySelector(sel);
-            if (!el) return null;
-            const phoneEl = el.querySelector("td:nth-child(1) span.font-mono");
-            const countryEl = el.querySelector("td:nth-child(2) span.text-slate-200");
-            if (!phoneEl) return null;
-            return {
-                number: phoneEl.innerText.trim(),
-                country: countryEl ? countryEl.innerText.trim().toUpperCase() : "UNKNOWN"
-            };
-        }, rowSelector);
-    } catch (e) { return null; }
-}
+// ================== MAIN PROCESS ==================
 
-// ================== MAIN LOGIC ==================
-
-async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
+async function processUserInput(userId, arg1, arg2, usernameTg, firstNameTg, messageIdToEdit = null) {
     let msgId = messageIdToEdit;
     let actionInterval = null;
-    const numToFetch = parseInt(clickCount) || 1;
     let release = null;
 
-    try {
-        // Paksa buat pesan status jika belum ada
-        if (!msgId) msgId = await tg.tgSend(userId, "🔄 Menyiapkan sistem...");
+    // Proteksi Variabel Terbalik
+    // Jika arg1 lebih pendek dari arg2, berarti arg1 adalah jumlah, arg2 adalah prefix.
+    let prefix = String(arg1).length > String(arg2).length ? arg1 : arg2;
+    let clickCount = String(arg1).length > String(arg2).length ? arg2 : arg1;
+    const numToFetch = Math.min(parseInt(clickCount) || 1, 10);
 
-        // Safety Timeout untuk Antrean
-        const timeout = setTimeout(() => { throw new Error("TIMEOUT_ANTREAN"); }, 40000);
+    try {
+        if (!msgId) msgId = await tg.tgSend(userId, "⏳ Menyiapkan Sesi Fresh...");
+
+        // Safety Antrean
+        const timeout = setTimeout(() => { throw new Error("ANTREAN_PENUH"); }, 45000);
         release = await state.browserLock.acquire();
         clearTimeout(timeout);
 
         actionInterval = setInterval(() => tg.tgSendAction(userId, "typing").catch(() => {}), 4500);
 
-        // RESET & MULAI FRESH
+        // 1. Jalankan Browser
         await tg.tgEdit(userId, msgId, getProgressMessage(2, prefix, numToFetch));
-        await initBrowser();
+        const ready = await initBrowser(userId);
+        if (!ready) throw new Error("Gagal inisialisasi browser.");
 
         const page = state.sharedPage;
         const INPUT_SEL = "input[name='numberrange']";
         const BTN_SEL = "button[type='submit']";
 
-        // INPUT RANGE
+        // 2. Isi Input via DOM (Anti-Gagal)
         await page.waitForSelector(INPUT_SEL, { visible: true, timeout: 10000 });
         await page.evaluate((sel, val) => {
             const el = document.querySelector(sel);
             el.value = val;
             el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
         }, INPUT_SEL, prefix);
 
         await tg.tgEdit(userId, msgId, getProgressMessage(5, prefix, numToFetch));
 
-        // KLIK TOMBOL
+        // 3. Klik Tombol via DOM
         await page.evaluate((sel, count) => {
             const btn = document.querySelector(sel);
-            for(let i=0; i<count; i++) btn.click();
+            if (btn) {
+                for(let i=0; i<count; i++) btn.click();
+            }
         }, BTN_SEL, numToFetch);
 
-        // TUNGGU NOMOR MUNCUL
+        // 4. Scan Hasil
         let foundNumbers = [];
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 15; i++) {
             await tg.tgEdit(userId, msgId, getProgressMessage(6 + i, prefix, numToFetch));
             
-            // Ambil semua baris yang mungkin berisi nomor baru
-            const tasks = [];
-            for (let j = 1; j <= numToFetch + 2; j++) {
-                tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${j})`, page));
-            }
-            const results = await Promise.all(tasks);
-            foundNumbers = results.filter(r => r && r.number && !db.isInCache(normalizeNumber(r.number)));
+            foundNumbers = await page.evaluate(() => {
+                const rows = Array.from(document.querySelectorAll('tbody tr'));
+                return rows.map(row => {
+                    const phone = row.querySelector("td:nth-child(1) span.font-mono");
+                    const country = row.querySelector("td:nth-child(2) span.text-slate-200");
+                    return phone ? { number: phone.innerText.trim(), country: country ? country.innerText.trim() : "UN" } : null;
+                }).filter(r => r !== null);
+            });
+
+            // Filter nomor yang belum ada di cache
+            foundNumbers = foundNumbers.filter(n => !db.isInCache(normalizeNumber(n.number)));
 
             if (foundNumbers.length >= numToFetch) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        if (foundNumbers.length === 0) throw new Error("Nomor tidak ditemukan di tabel.");
+        if (foundNumbers.length === 0) {
+            await sendDebugScreenshot(userId, "❓ Nomor Tidak Muncul - Cek Web");
+            throw new Error("Nomor tidak ditemukan.");
+        }
 
-        // KIRIM HASIL
+        // 5. Sukses
         let resMsg = `✅ <b>BERHASIL!</b>\n\n`;
         foundNumbers.slice(0, numToFetch).forEach((n, idx) => {
             const norm = normalizeNumber(n.number);
-            resMsg += `${idx+1}. <code>${norm}</code> (${n.country})\n`;
+            resMsg += `${idx+1}. <code>${norm}</code> (${n.country.toUpperCase()})\n`;
             db.saveCache({ number: norm, country: n.country, user_id: userId, time: Date.now() });
             db.addToWaitList(norm, userId, usernameTg, firstNameTg);
         });
@@ -173,13 +180,12 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         });
 
     } catch (e) {
-        console.error(`[CRITICAL ERROR] ${e.message}`);
-        if (state.sharedPage) await state.sharedPage.screenshot({ path: `error_${userId}.png` });
-        await tg.tgEdit(userId, msgId, `❌ <b>Sistem Error:</b> <code>${e.message}</code>\n\n<i>Bot telah di-reset otomatis. Silakan coba lagi.</i>`);
+        console.error(`[FINAL ERROR] ${e.message}`);
+        await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> <code>${e.message}</code>\n\nGunakan /cek untuk melihat layar.`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
         if (release) release();
     }
 }
 
-module.exports = { initBrowser, processUserInput, getProgressMessage };
+module.exports = { initBrowser, processUserInput, getProgressMessage, sendDebugScreenshot };
