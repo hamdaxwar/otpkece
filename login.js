@@ -1,245 +1,136 @@
-const puppeteer = require('puppeteer-core');
-const config = require('../config');
-const { performLogin } = require('../login'); 
-const { state } = require('./state');
-const db = require('./database');
-const tg = require('./telegram');
+const tg = require('./helpers/telegram');
 
-// --- Helper Functions ---
+// delay
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-function normalizeNumber(number) {
-    let norm = String(number).trim().replace(/[\s-]/g, "");
-    if (!norm.startsWith('+') && /^\d+$/.test(norm)) {
-        norm = '+' + norm;
+// human typing
+async function humanType(page, selector, text) {
+    await page.waitForSelector(selector, { timeout: 30000 }); // 🔥 penting
+    await page.focus(selector);
+
+    for (const char of text) {
+        await page.keyboard.type(char);
+        await sleep(60 + Math.random() * 120);
     }
-    return norm;
 }
 
-function getProgressMessage(currentStep, totalSteps, prefixRange, numCount) {
-    const progressRatio = Math.min(currentStep / 12, 1.0);
-    const filledCount = Math.ceil(progressRatio * (config.BAR?.MAX_LENGTH || 12));
-    const emptyCount = (config.BAR?.MAX_LENGTH || 12) - filledCount;
-    const bar = (config.BAR?.FILLED || "█").repeat(filledCount) + (config.BAR?.EMPTY || "░").repeat(emptyCount);
-
-    let status = config.STATUS_MAP ? config.STATUS_MAP[currentStep] : "Processing...";
-    
-    return `<code>${status}</code>\n<blockquote>Range: <code>${prefixRange}</code> | Jumlah: <code>${numCount}</code></blockquote>\n<code>Load:</code> [${bar}]`;
-}
-
-// --- Browser Control (PURE PUPPETEER) ---
-
-async function initBrowser() {
+async function performLogin(page, email, password, loginUrl) {
     try {
-        if (state.browser) {
-            try { await state.browser.close(); } catch(e){}
-        }
-        
-        console.log("[BROWSER] Launching Chromium (Termux Mode)...");
+        console.log("[BROWSER] Membuka halaman login...");
 
-        state.browser = await puppeteer.launch({
-            executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
-            headless: true,
-            protocolTimeout: 120000, // 🔥 penting untuk Termux
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                '--single-process'
-            ]
+        page.setDefaultTimeout(120000);
+        page.setDefaultNavigationTimeout(120000);
+
+        await page.goto(loginUrl, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 120000
         });
 
-        state.sharedPage = await state.browser.newPage();
+        console.log("[BROWSER] Menunggu page stabil...");
+        await sleep(5000);
 
-        // 🔥 bikin puppeteer ringan (block resource berat)
-        await state.sharedPage.setRequestInterception(true);
-        state.sharedPage.on('request', req => {
-            const type = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                req.abort();
-            } else {
-                req.continue();
-            }
-        });
+        // 🔥 selector diperluas (biar nggak gagal)
+        const emailSelector = `
+            input[type='email'],
+            input[name='email'],
+            input[name='username'],
+            input[type='text']
+        `;
+        const passSelector  = "input[type='password']";
+        const btnSelector   = `
+            button[type='submit'],
+            input[type='submit'],
+            button.login,
+            button
+        `;
 
-        // User-Agent mobile
-        await state.sharedPage.setUserAgent(
-            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-        );
+        console.log("[BROWSER] Mencari input email...");
+        await page.waitForSelector(emailSelector, { timeout: 30000 });
 
-        console.log("[BROWSER] Menjalankan login...");
-
-        const loginSuccess = await performLogin(
-            state.sharedPage, 
-            config.STEX_EMAIL, 
-            config.STEX_PASSWORD, 
-            config.LOGIN_URL 
-        );
-
-        if (loginSuccess) {
-            console.log("[BROWSER] Browser siap.");
-        } else {
-            console.error("[BROWSER ERROR] Login gagal.");
-            await state.sharedPage.screenshot({ path: 'login_failed_final.png' });
-        }
-
-    } catch (e) {
-        console.error("[BROWSER FATAL]", e.message);
-    }
-}
-
-async function getNumberAndCountryFromRow(rowSelector, page) {
-    try {
-        const data = await page.evaluate((sel) => {
-            const row = document.querySelector(sel);
-            if (!row) return null;
-
-            const phoneEl = row.querySelector("td:nth-child(1) span.font-mono");
-            const statusEl = row.querySelector("td:nth-child(1) div:nth-child(2) span");
-            const countryEl = row.querySelector("td:nth-child(2) span.text-slate-200");
-
-            return {
-                numberRaw: phoneEl ? phoneEl.innerText.trim() : null,
-                statusText: statusEl ? statusEl.innerText.trim().toLowerCase() : "unknown",
-                country: countryEl ? countryEl.innerText.trim().toUpperCase() : "UNKNOWN"
-            };
-        }, rowSelector);
-
-        if (!data || !data.numberRaw) return null;
-
-        const forbiddenStatus = ["success", "failed", "expired", "used"];
-        if (forbiddenStatus.some(s => data.statusText.includes(s))) return null;
-
-        const number = data.numberRaw.replace(/[\s-]/g, "");
-        if (db.isInCache && db.isInCache(number)) return null;
-
-        if (number.length > 5) return { number: normalizeNumber(number), country: data.country };
-        return null;
-
-    } catch (e) {
-        return null;
-    }
-}
-
-async function getAllNumbersParallel(page, numToFetch) {
-    const tasks = [];
-    for (let i = 1; i <= 15; i++) {
-        tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page));
-    }
-    const results = await Promise.all(tasks);
-
-    const currentNumbers = [];
-    const seen = new Set();
-
-    for (const res of results) {
-        if (res && res.number && !seen.has(res.number)) {
-            currentNumbers.push(res);
-            seen.add(res.number);
-        }
-    }
-    return currentNumbers;
-}
-
-// --- Main Logic ---
-
-async function actionTask(userId) {
-    return setInterval(() => {
-        tg.tgSendAction(userId, "typing").catch(() => {});
-    }, 4500);
-}
-
-async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
-    let msgId = messageIdToEdit; 
-    let actionInterval = null;
-    const numToFetch = parseInt(clickCount);
-
-    try {
-        actionInterval = await actionTask(userId);
-        let currentStep = 0;
-
-        if (!msgId) {
-            msgId = await tg.tgSend(userId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-        }
-
-        if (!state.sharedPage || state.sharedPage.isClosed()) {
-            await initBrowser();
-        }
-
-        const page = state.sharedPage;
-
-        if (!page.url().includes('getnum')) {
-            console.log("[SCRAPER] Ke halaman target...");
-            await page.goto(config.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        }
-
-        const INPUT_SELECTOR = "input[name='numberrange']";
-
-        await page.waitForSelector(INPUT_SELECTOR, { timeout: 20000 });
-        await page.click(INPUT_SELECTOR, { clickCount: 3 });
+        // bersihkan email
+        await page.click(emailSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
-        await page.type(INPUT_SELECTOR, prefix);
 
-        currentStep = 3;
-        await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
+        console.log("[BROWSER] Human typing email...");
+        await humanType(page, emailSelector, email);
 
-        const BUTTON_SELECTOR = "//button[contains(text(), 'Get Number')]";
-        await page.waitForSelector('xpath/' + BUTTON_SELECTOR, { timeout: 20000 });
+        console.log("[BROWSER] Mencari input password...");
+        await page.waitForSelector(passSelector, { timeout: 30000 }); // 🔥 FIX BESAR
 
-        for (let i = 0; i < numToFetch; i++) {
-            await page.evaluate((sel) => {
-                const btn = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                if (btn) btn.click();
-            }, BUTTON_SELECTOR);
-            await new Promise(r => setTimeout(r, 400));
+        // bersihkan password
+        await page.click(passSelector, { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+
+        console.log("[BROWSER] Human typing password...");
+        await humanType(page, passSelector, password);
+
+        // screenshot sebelum login
+        const imgBefore = "login_before.png";
+        await page.screenshot({ path: imgBefore });
+
+        if (process.env.ADMIN_ID) {
+            await tg.tgSendPhoto(
+                process.env.ADMIN_ID,
+                imgBefore,
+                "🟡 Sebelum klik login"
+            ).catch(()=>{});
         }
 
-        currentStep = 8;
-        await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
+        await sleep(700 + Math.random() * 1300);
 
-        let foundNumbers = [];
-        const startTime = Date.now() / 1000;
+        console.log("[BROWSER] Klik tombol login...");
+        await page.click(btnSelector);
 
-        while ((Date.now() / 1000 - startTime) < 25) {
-            foundNumbers = await getAllNumbersParallel(page, numToFetch);
-            if (foundNumbers.length >= numToFetch) break;
-            await new Promise(r => setTimeout(r, 1200));
+        await Promise.race([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(()=>{}),
+            sleep(4000)
+        ]);
+
+        await sleep(3000);
+
+        // screenshot setelah login
+        const imgAfter = "login_after.png";
+        await page.screenshot({ path: imgAfter });
+
+        if (process.env.ADMIN_ID) {
+            await tg.tgSendPhoto(
+                process.env.ADMIN_ID,
+                imgAfter,
+                "🟢 Setelah klik login"
+            ).catch(()=>{});
         }
 
-        if (foundNumbers.length === 0) {
-            await tg.tgEdit(userId, msgId, "❌ <b>Gagal Mendapatkan Nomor.</b>\nRange kosong atau server sibuk.");
-            return;
+        const currentUrl = page.url();
+        console.log("[DEBUG URL]", currentUrl);
+
+        if (currentUrl.includes('login') || currentUrl.includes('signin')) {
+            console.log("[BROWSER] Login gagal (masih di halaman login).");
+            return false;
         }
 
-        currentStep = 12;
-        await tg.tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
+        console.log("[BROWSER] Login berhasil.");
+        return true;
 
-        const mainCountry = foundNumbers[0].country || "UNKNOWN";
-        const emoji = config.COUNTRY_EMOJI?.[mainCountry] || "📞";
+    } catch (err) {
+        console.error("[LOGIN ERROR]", err.message);
 
-        let msg = `✅ <b>Numbers Ready!</b>\n\n`;
-        foundNumbers.slice(0, numToFetch).forEach((entry) => {
-            msg += `📱 <code>${entry.number}</code>\n`;
-            db.saveCache({ number: entry.number, country: entry.country, user_id: userId, time: Date.now() });
-            db.addToWaitList(entry.number, userId, usernameTg, firstNameTg);
-        });
-        msg += `\n${emoji} ${mainCountry} | Range: <code>${prefix}</code>`;
+        try {
+            const imgErr = "login_error.png";
+            await page.screenshot({ path: imgErr });
 
-        const inlineKb = {
-            inline_keyboard: [
-                [{ text: "🔄 Ganti Nomor", callback_data: `change_num:1:${prefix}` }],
-                [{ text: "🌐 Menu Utama", callback_data: "getnum" }]
-            ]
-        };
+            if (process.env.ADMIN_ID) {
+                await tg.tgSendPhoto(
+                    process.env.ADMIN_ID,
+                    imgErr,
+                    "❌ Error login: " + err.message
+                ).catch(()=>{});
+            }
+        } catch(e){}
 
-        await tg.tgEdit(userId, msgId, msg, inlineKb);
-
-    } catch (e) {
-        console.error("[SCRAPER ERROR]", e);
-        await tg.tgEdit(userId, msgId, `❌ <b>Error:</b> ${e.message}`);
-    } finally {
-        if (actionInterval) clearInterval(actionInterval);
+        return false;
     }
 }
 
-module.exports = { initBrowser, processUserInput, getProgressMessage };
+module.exports = { performLogin };
