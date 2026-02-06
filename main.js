@@ -11,6 +11,7 @@ const callbacks = require('./handlers/callbacks');
 
 console.log("[DEBUG] STEX_EMAIL dari ENV:", process.env.STEX_EMAIL ? "TERISI" : "KOSONG!");
 
+// ================= EXPIRY MONITOR =================
 async function expiryMonitorTask() {
     setInterval(async () => {
         try {
@@ -30,10 +31,13 @@ async function expiryMonitorTask() {
                 }
             }
             db.saveWaitList(updatedList);
-        } catch (e) {}
+        } catch (e) {
+            console.error("[EXPIRY MONITOR ERROR]", e);
+        }
     }, 15000);
 }
 
+// ================= TELEGRAM POLLING =================
 async function telegramLoop() {
     state.verifiedUsers = db.loadUsers();
     let offset = 0;
@@ -50,12 +54,14 @@ async function telegramLoop() {
                 }
             }
         } catch (e) {
+            console.error("[TELEGRAM POLLING ERROR]", e);
             await new Promise(r => setTimeout(r, 5000));
         }
         await new Promise(r => setTimeout(r, 1000));
     }
 }
 
+// ================= MAIN =================
 async function main() {
     console.log("[INFO] Menjalankan NodeJS Bot Modular...");
     db.initializeFiles();
@@ -66,21 +72,32 @@ async function main() {
     console.log("[INFO] Login browser dimulai...");
     const loginResult = await scraper.initBrowser();
 
-    // kirim status login ke admin + screenshot
-    let statusText = loginResult.success ? "✅ LOGIN SUKSES" : "❌ LOGIN GAGAL";
-
-    await tg.tgSend(process.env.ADMIN_ID, `🔐 Status Login Bot:\n${statusText}`).catch(()=>{});
-
-    if (loginResult.screenshot) {
-        await tg.tgSendPhoto(
-            process.env.ADMIN_ID,
-            loginResult.screenshot,
-            "📸 Screenshot halaman setelah login"
-        ).catch(()=>{});
+    // tunggu 4 detik lalu paksa redirect ke dashboard
+    await new Promise(r => setTimeout(r, 4000));
+    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
+        await scraper.state.sharedPage.goto(config.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     }
 
+    // screenshot final halaman dashboard
+    const finalSS = "login_final.png";
+    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
+        await scraper.state.sharedPage.screenshot({ path: finalSS });
+    }
+
+    // cek tombol "Get Number" untuk login sukses
+    let btnExist = false;
+    if (scraper.state.sharedPage && !scraper.state.sharedPage.isClosed()) {
+        btnExist = await scraper.state.sharedPage.$("button[type='submit']") !== null;
+    }
+
+    const statusText = (loginResult.success && btnExist) ? "✅ LOGIN SUKSES" : "❌ LOGIN GAGAL";
+
+    // kirim status + screenshot ke admin
+    await tg.tgSend(process.env.ADMIN_ID, `🔐 Status Login Bot:\n${statusText}`).catch(()=>{});
+    await tg.tgSendPhoto(process.env.ADMIN_ID, finalSS, "📸 Screenshot halaman dashboard").catch(()=>{});
+
     console.log("=================================");
-    console.log("STATUS LOGIN:", loginResult.success ? "SUKSES" : "GAGAL");
+    console.log("STATUS LOGIN:", statusText);
     console.log("ketik y untuk menjalankan range.js & message.js");
     console.log("> ");
 
@@ -104,6 +121,7 @@ async function main() {
         }
     });
 
+    // jadwal login otomatis tiap jam 7 pagi
     cron.schedule('0 7 * * *', async () => {
         const release = await playwrightLock.acquire();
         try { await scraper.initBrowser(); } finally { release(); }
