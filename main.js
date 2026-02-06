@@ -4,9 +4,12 @@ const cron = require('node-cron');
 const db = require('./helpers/database');
 const tg = require('./helpers/telegram');
 const scraper = require('./helpers/scraper');
-const { playwrightLock } = scraper;
+const state = require('./helpers/state'); // Ambil state pusat
 const commands = require('./handlers/commands');
 const callbacks = require('./handlers/callbacks');
+
+// Alias lock untuk kompatibilitas dengan cron job di bawah
+const playwrightLock = state.browserLock;
 
 console.log("[DEBUG] STEX_EMAIL dari ENV:", process.env.STEX_EMAIL ? "TERISI" : "KOSONG!");
 
@@ -51,7 +54,13 @@ async function telegramLoop() {
                     offset = upd.update_id + 1;
 
                     if (upd.message) {
-                        console.log(`[TELEGRAM] Update dari ${upd.message.from.id}: ${upd.message.text || '[no text]'}`);
+                        const chatId = upd.message.from.id;
+                        console.log(`[TELEGRAM] Update dari ${chatId}: ${upd.message.text || '[no text]'}`);
+                        
+                        // FIX: Pastikan state.users terinisialisasi sebelum diproses handler
+                        if (!state.users) state.users = {};
+                        if (!state.users[chatId]) state.users[chatId] = { waitingAdminInput: false };
+
                         await commands.processCommand(upd.message);
                     }
                     if (upd.callback_query) {
@@ -74,14 +83,19 @@ async function main() {
     db.initializeFiles();
 
     // sms.js tetap jalan (tidak buka tab)
-    require('./sms.js');
+    // Pastikan sms.js juga menggunakan require('./helpers/state') tanpa { }
+    try {
+        require('./sms.js');
+    } catch (e) {
+        console.error("[ERROR] Gagal memuat sms.js:", e.message);
+    }
 
     console.log("[INFO] Login browser dimulai...");
     await scraper.initBrowser(); // login.js handle semua status & screenshot
 
     console.log("=================================");
     console.log("ketik y untuk menjalankan range.js & message.js");
-    console.log("> ");
+    process.stdout.write("> ");
 
     // ================== PROMPT TERMINAL ==================
     const rl = readline.createInterface({
@@ -92,11 +106,17 @@ async function main() {
     rl.on('line', async (input) => {
         if (input.trim().toLowerCase() === 'y') {
             console.log("🚀 Menjalankan range.js & message.js...");
+            
+            // Panggil file range dan message
             require('./range.js');
             require('./message.js');
 
-            // jalankan telegram loop + expiry monitor bersamaan
-            await Promise.all([telegramLoop(), expiryMonitorTask()]);
+            // Jalankan telegram loop + expiry monitor bersamaan
+            // Tidak menggunakan await Promise.all agar loop tidak memblokir rl
+            telegramLoop();
+            expiryMonitorTask();
+            
+            console.log("✅ Semua sistem berjalan.");
             rl.close();
         } else {
             console.log("ketik y untuk lanjut...");
@@ -106,6 +126,7 @@ async function main() {
 
     // ================== CRON RESTART BROWSER ==================
     cron.schedule('0 7 * * *', async () => {
+        console.log("[CRON] Merestart browser...");
         const release = await playwrightLock.acquire();
         try {
             await scraper.initBrowser();
