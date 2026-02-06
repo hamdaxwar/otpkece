@@ -1,9 +1,25 @@
 const config = require('../config');
 const db = require('../helpers/database');
 const tg = require('../helpers/telegram');
-const { state } = require('../helpers/state');
+const state = require('../helpers/state'); // FIX 1: Panggil state utuh tanpa { }
 const scraper = require('../helpers/scraper');
 const adminHandler = require('./admin');
+
+// Fungsi pembantu untuk memastikan objek user ada di state
+function initUserState(userId) {
+    if (!state.users) state.users = {};
+    if (!state.users[userId]) {
+        state.users[userId] = {
+            waitingAdminInput: false,
+            waitingBroadcastInput: false,
+            get10RangeInput: false,
+            waitingDanaInput: false,
+            manualRangeInput: false,
+            verified: false
+        };
+    }
+    return state.users[userId];
+}
 
 async function processCommand(msg) {
     const chatId = msg.chat.id;
@@ -13,19 +29,23 @@ async function processCommand(msg) {
     const mention = usernameTg ? `@${usernameTg}` : `<a href='tg://user?id=${userId}'>${firstName}</a>`;
     const text = msg.text || "";
 
+    // Inisialisasi state user biar gak error "undefined"
+    const userState = initUserState(userId);
+
     // --- ADMIN COMMANDS ---
     if (userId === config.ADMIN_ID) {
         if (text.startsWith("/add")) {
-            state.waitingAdminInput.add(userId);
+            userState.waitingAdminInput = true; // FIX 2: Pakai boolean, bukan .add()
             const prompt = "Silahkan kirim daftar range dalam format:\n\n<code>range > country > service</code>\nAtau default service WA:\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE > WA</code>";
             const mid = await tg.tgSend(userId, prompt);
             if (mid) state.pendingMessage[userId] = mid;
             return;
         } 
         else if (text === "/info") {
-            state.waitingBroadcastInput.add(userId);
+            userState.waitingBroadcastInput = true;
             const mid = await tg.tgSend(userId, "<b>Pesan Siaran</b>\n\nKirim pesan yang ingin disiarkan. Ketik <code>.batal</code> untuk batal.");
-            if (mid) state.broadcastMessage[userId] = mid;
+            if (mid) state.broadcastMessage = state.broadcastMessage || {}; // Safety
+            state.broadcastMessage[userId] = mid;
             return;
         } 
         else if (text.startsWith("/get10akses ")) {
@@ -43,7 +63,7 @@ async function processCommand(msg) {
     // --- GET10 ---
     if (text === "/get10") {
         if (db.hasGet10Access(userId)) {
-            state.get10RangeInput.add(userId);
+            userState.get10RangeInput = true;
             const mid = await tg.tgSend(userId, "kirim range contoh 225071606XXX");
             if (mid) state.pendingMessage[userId] = mid;
         } else {
@@ -52,30 +72,30 @@ async function processCommand(msg) {
         return;
     }
 
-    // --- STATE HANDLERS ---
-    if (state.waitingAdminInput.has(userId)) {
-        state.waitingAdminInput.delete(userId);
+    // --- STATE HANDLERS (LOGIKA INPUT) ---
+    if (userState.waitingAdminInput) {
+        userState.waitingAdminInput = false;
         const pMsgId = state.pendingMessage[userId];
         delete state.pendingMessage[userId];
         await adminHandler.handleAddRange(userId, text, pMsgId);
         return;
     }
 
-    if (state.waitingBroadcastInput.has(userId)) {
-        state.waitingBroadcastInput.delete(userId);
-        const pMsgId = state.broadcastMessage[userId];
-        delete state.broadcastMessage[userId];
+    if (userState.waitingBroadcastInput) {
+        userState.waitingBroadcastInput = false;
+        const pMsgId = state.broadcastMessage ? state.broadcastMessage[userId] : null;
+        if(state.broadcastMessage) delete state.broadcastMessage[userId];
         await adminHandler.handleBroadcast(userId, chatId, text, pMsgId);
         return;
     }
 
-    if (state.waitingDanaInput.has(userId)) {
+    if (userState.waitingDanaInput) {
         const lines = text.trim().split('\n');
         if (lines.length >= 2) {
             const dNum = lines[0].trim();
             const dName = lines.slice(1).join(' ').trim();
             if (/^[\d+]+$/.test(dNum)) {
-                state.waitingDanaInput.delete(userId);
+                userState.waitingDanaInput = false;
                 db.updateUserDana(userId, dNum, dName);
                 await tg.tgSend(userId, `✅ <b>Dana Berhasil Disimpan!</b>\n\nNo: ${dNum}\nA/N: ${dName}`);
             } else {
@@ -88,8 +108,8 @@ async function processCommand(msg) {
     }
 
     // --- MANUAL & GET10 INPUT PROCESS ---
-    if (state.get10RangeInput.has(userId)) {
-        state.get10RangeInput.delete(userId);
+    if (userState.get10RangeInput) {
+        userState.get10RangeInput = false;
         const prefix = text.trim();
         let menuMsgId = state.pendingMessage[userId];
         delete state.pendingMessage[userId];
@@ -104,8 +124,9 @@ async function processCommand(msg) {
     }
 
     const isManualFormat = /^\+?\d{3,15}[Xx*#]+$/.test(text.trim());
-    if (state.manualRangeInput.has(userId) || (state.verifiedUsers.has(userId) && isManualFormat)) {
-        state.manualRangeInput.delete(userId);
+    // Ganti logic state.verifiedUsers.has(userId) dengan data di userState
+    if (userState.manualRangeInput || (userState.verified && isManualFormat)) {
+        userState.manualRangeInput = false;
         const prefix = text.trim();
         let menuMsgId = state.pendingMessage[userId];
         delete state.pendingMessage[userId];
@@ -120,7 +141,7 @@ async function processCommand(msg) {
     }
 
     if (text.startsWith("/setdana")) {
-        state.waitingDanaInput.add(userId);
+        userState.waitingDanaInput = true;
         await tg.tgSend(userId, "Silahkan kirim dana dalam format:\n\n<code>08123456789\nNama Pemilik</code>");
         return;
     }
@@ -128,7 +149,7 @@ async function processCommand(msg) {
     // --- START ---
     if (text === "/start") {
         if (await tg.isUserInBothGroups(userId)) {
-            state.verifiedUsers.add(userId);
+            userState.verified = true; // Simpan ke state
             db.saveUsers(userId);
             const prof = db.getUserProfile(userId, firstName);
             const fullName = usernameTg ? `${firstName} (@${usernameTg})` : firstName;
