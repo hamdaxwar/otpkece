@@ -1,26 +1,27 @@
-const { Mutex } = require('async-mutex');
+const AsyncLock = require('async-lock');
+const lock = new AsyncLock();
 
-// Locks
-const playwrightLock = new Mutex();
-
-// Runtime Data Containers
 const state = {
     browser: null,
     sharedPage: null,
-    
-    // Sets & Maps
-    waitingBroadcastInput: new Set(),
-    broadcastMessage: {},
-    verifiedUsers: new Set(),
-    waitingAdminInput: new Set(),
-    manualRangeInput: new Set(),
-    get10RangeInput: new Set(),
-    waitingDanaInput: new Set(),
     pendingMessage: {},
-    lastUsedRange: {}
+    lastUsedRange: {},
+    
+    // Management Antrian (Locking)
+    browserLock: {
+        acquire: async function() {
+            let releaseFunc;
+            const promise = new Promise(resolve => {
+                releaseFunc = resolve;
+            });
+            
+            // Mengunci akses ke browser berdasarkan key 'puppeteer'
+            await lock.acquire('puppeteer', () => promise);
+            return releaseFunc;
+        },
+        isLocked: () => lock.isBusy('puppeteer')
+    }
 };
 
-module.exports = {
-    playwrightLock,
-    state
-};
+module.exports = state;
+        
