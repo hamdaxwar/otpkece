@@ -39,7 +39,7 @@ async function initBrowser() {
         state.browser = await puppeteer.launch({
             executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser',
             headless: true,
-            protocolTimeout: 120000,
+            protocolTimeout: 180000,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -50,16 +50,17 @@ async function initBrowser() {
             ]
         });
 
-        // 🔥 PAGE KHUSUS LOGIN (BIAR TIDAK DIREBUT MODUL LAIN)
+        // ================= LOGIN PAGE =================
         const loginPage = await state.browser.newPage();
 
+        // ⚠️ JANGAN BLOK CSS & SCRIPT!
         await loginPage.setRequestInterception(true);
         loginPage.on('request', req => {
             const type = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                req.abort();
+            if (['image', 'media', 'font'].includes(type)) {
+                req.abort(); // hemat resource
             } else {
-                req.continue();
+                req.continue(); // CSS & JS tetap jalan
             }
         });
 
@@ -76,23 +77,32 @@ async function initBrowser() {
             config.LOGIN_URL
         );
 
-        // screenshot status login
-        await loginPage.screenshot({ path: 'login_status.png' });
+        const loginShot = 'login_status.png';
+        await loginPage.screenshot({ path: loginShot });
+
+        // kirim screenshot ke admin
+        if (process.env.ADMIN_ID) {
+            await tg.tgSendPhoto(
+                process.env.ADMIN_ID,
+                loginShot,
+                loginSuccess ? "✅ Login sukses" : "❌ Login gagal"
+            ).catch(()=>{});
+        }
 
         if (!loginSuccess) {
             console.error("[BROWSER ERROR] Login gagal.");
-            return { success: false, screenshot: 'login_status.png' };
+            return false;
         }
 
         console.log("[BROWSER] Login sukses.");
 
-        // 🔥 PAGE KHUSUS SCRAPER (bukan loginPage)
+        // ================= SHARED PAGE (SCRAPER) =================
         state.sharedPage = await state.browser.newPage();
 
         await state.sharedPage.setRequestInterception(true);
         state.sharedPage.on('request', req => {
             const type = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+            if (['image', 'media', 'font'].includes(type)) {
                 req.abort();
             } else {
                 req.continue();
@@ -103,11 +113,11 @@ async function initBrowser() {
             'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36'
         );
 
-        return { success: true, screenshot: 'login_status.png' };
+        return true;
 
     } catch (e) {
         console.error("[BROWSER FATAL]", e.message);
-        return { success: false, screenshot: null };
+        return false;
     }
 }
 
@@ -187,14 +197,15 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         if (!state.sharedPage || state.sharedPage.isClosed()) {
-            await initBrowser();
+            const ok = await initBrowser();
+            if (!ok) throw new Error("Login gagal, browser tidak siap.");
         }
 
         const page = state.sharedPage;
 
         if (!page.url().includes('getnum')) {
             console.log("[SCRAPER] Ke halaman target...");
-            await page.goto(config.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.goto(config.TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
         }
 
         const INPUT_SELECTOR = "input[name='numberrange']";
