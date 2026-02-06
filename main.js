@@ -41,7 +41,6 @@ async function expiryMonitorTask() {
 // ================== TELEGRAM LOOP ==================
 async function telegramLoop() {
     let offset = 0;
-    try { await tg.tgGetUpdates(-1); } catch (e) {}
     console.log("[TELEGRAM] Polling dimulai...");
 
     while (true) {
@@ -50,8 +49,15 @@ async function telegramLoop() {
             if (data && data.result) {
                 for (const upd of data.result) {
                     offset = upd.update_id + 1;
-                    if (upd.message) await commands.processCommand(upd.message);
-                    if (upd.callback_query) await callbacks.processCallback(upd.callback_query);
+
+                    if (upd.message) {
+                        console.log(`[TELEGRAM] Update dari ${upd.message.from.id}: ${upd.message.text || '[no text]'}`);
+                        await commands.processCommand(upd.message);
+                    }
+                    if (upd.callback_query) {
+                        console.log(`[TELEGRAM] Callback query dari ${upd.callback_query.from.id}`);
+                        await callbacks.processCallback(upd.callback_query);
+                    }
                 }
             }
         } catch (e) {
