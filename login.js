@@ -28,7 +28,6 @@ async function performLogin(page, email, password, loginUrl) {
             timeout: 120000
         });
 
-        console.log("[BROWSER] Tunggu page stabil...");
         await sleep(5000);
 
         const emailSelector = `
@@ -37,75 +36,63 @@ async function performLogin(page, email, password, loginUrl) {
             input[name='username'],
             input[type='text']
         `;
-        const passSelector = "input[type='password']";
-
-        console.log("[BROWSER] Cari input email...");
-        await page.waitForSelector(emailSelector, { timeout: 30000 });
-
-        // clear email
-        await page.click(emailSelector, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
+        const passSelector  = "input[type='password']";
 
         console.log("[BROWSER] Isi email...");
+        await page.waitForSelector(emailSelector, { timeout: 30000 });
+        await page.click(emailSelector, { clickCount: 3 });
+        await page.keyboard.press('Backspace');
         await humanType(page, emailSelector, email);
 
-        console.log("[BROWSER] Cari input password...");
+        console.log("[BROWSER] Isi password...");
         await page.waitForSelector(passSelector, { timeout: 30000 });
-
-        // clear password
         await page.click(passSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
-
-        console.log("[BROWSER] Isi password...");
         await humanType(page, passSelector, password);
 
-        // screenshot sebelum ENTER
+        // screenshot sebelum login
         const imgBefore = "login_before.png";
         await page.screenshot({ path: imgBefore });
 
         if (process.env.ADMIN_ID) {
-            await tg.tgSendPhoto(
-                process.env.ADMIN_ID,
-                imgBefore,
-                "🟡 Sebelum ENTER login"
-            ).catch(()=>{});
+            await tg.tgSendPhoto(process.env.ADMIN_ID, imgBefore, "🟡 Sebelum ENTER");
         }
 
-        console.log("[BROWSER] Tekan ENTER untuk login...");
-        await page.keyboard.press('Enter');
+        await sleep(800);
 
-        // ⏳ tunggu 4 detik
+        console.log("[BROWSER] Tekan ENTER untuk login...");
+        await page.keyboard.press("Enter");
+
+        // tunggu 4 detik lalu redirect paksa
         await sleep(4000);
 
         console.log("[BROWSER] Redirect paksa ke dashboard...");
         await page.goto("https://stexsms.com/mdashboard/getnum", {
-            waitUntil: 'domcontentloaded',
+            waitUntil: "domcontentloaded",
             timeout: 120000
         });
 
-        // tunggu page dashboard stabil
-        await sleep(3000);
+        await sleep(4000);
 
         // screenshot setelah redirect
         const imgAfter = "login_after.png";
         await page.screenshot({ path: imgAfter });
 
         if (process.env.ADMIN_ID) {
-            await tg.tgSendPhoto(
-                process.env.ADMIN_ID,
-                imgAfter,
-                "🟢 Setelah redirect dashboard"
-            ).catch(()=>{});
+            await tg.tgSendPhoto(process.env.ADMIN_ID, imgAfter, "🟢 Setelah redirect dashboard");
         }
 
-        const currentUrl = page.url();
-        console.log("[DEBUG URL]", currentUrl);
+        // ✅ CEK TOMBOL "Get Number"
+        const isSuccess = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll("button"));
+            return btns.some(btn => btn.innerText.includes("Get Number"));
+        });
 
-        if (currentUrl.includes("getnum")) {
-            console.log("[BROWSER] Login berhasil (dashboard terbuka).");
+        if (isSuccess) {
+            console.log("[LOGIN] ✅ BERHASIL (Get Number ditemukan)");
             return true;
         } else {
-            console.log("[BROWSER] Login gagal.");
+            console.log("[LOGIN] ❌ GAGAL (Get Number tidak ditemukan)");
             return false;
         }
 
@@ -117,11 +104,7 @@ async function performLogin(page, email, password, loginUrl) {
             await page.screenshot({ path: imgErr });
 
             if (process.env.ADMIN_ID) {
-                await tg.tgSendPhoto(
-                    process.env.ADMIN_ID,
-                    imgErr,
-                    "❌ Error login: " + err.message
-                ).catch(()=>{});
+                await tg.tgSendPhoto(process.env.ADMIN_ID, imgErr, "❌ Error login: " + err.message);
             }
         } catch(e){}
 
